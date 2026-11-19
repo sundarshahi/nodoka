@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Minimum supported Rust version (1.85)
+        run: rustup toolchain install 1.85 --profile minimal && cargo +1.85 check --locked
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --all-targets --locked
+      - name: Node preload lowers the reported core count
+        shell: bash
+        run: |
+          got=$(LOADLINE_CPUS=1 NODE_OPTIONS="--require=$PWD/preload/preload.cjs" node -p 'require("os").availableParallelism()')
+          test "$got" = 1 || { echo "expected 1, got $got"; exit 1; }

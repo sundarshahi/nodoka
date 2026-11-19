@@ -1,0 +1,22 @@
+[package]
+name = "loadline"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Keeps your computer responsive while dev servers, builds, installs and AI coding agents run — any stack, no new commands."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sundarshahi/loadline"
+readme = "README.md"
+keywords = ["developer-tools", "performance", "memory", "dev-server", "agents"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["/.github", "/docs/overview.html"]
+
+[dependencies]
+libc = "0.2.191"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

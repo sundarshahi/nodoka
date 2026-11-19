@@ -1,0 +1,30 @@
+name: A tool isn't recognised
+description: loadline ignores (or misjudges) a dev server, build, test runner or installer.
+labels: [tool-rule]
+body:
+  - type: input
+    id: command
+    attributes:
+      label: The command you run
+      placeholder: "bin/dev, or: pnpm exec astro preview"
+    validations:
+      required: true
+  - type: textarea
+    id: explain
+    attributes:
+      label: Output of `loadline explain <pid>` while it runs
+      description: This shows the command line loadline actually sees, which is what the rule must match.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is it?
+      options:
+        - install (downloads dependencies)
+        - build (runs and finishes)
+        - test (runs and finishes)
+        - dev server or watcher (runs until stopped)
+    validations:
+      required: true
