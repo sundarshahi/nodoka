@@ -28,7 +28,7 @@ struct Tracked {
     /// The tree minus processes a shell is waiting on; only these are ever stopped.
     stoppable: Vec<Key>,
     cpu_ns: u64,
-    /// When loadline first saw this job. Process age can't be used: a shell that spends a minute
+    /// When nodoka first saw this job. Process age can't be used: a shell that spends a minute
     /// on `npm ci && next build` and then becomes `next build` is a minute old but a new build.
     first_seen: u64,
     last_active: u64,
@@ -42,12 +42,14 @@ struct Tracked {
     last_net: u64,
     /// Connections that already held unread data when the job went to sleep.
     snapshot: HashSet<u64>,
+    /// While asleep: watches the project, so saving a file wakes the server (hot reload keeps working).
+    watch: Option<sys::Watch>,
     noticed: State,
 }
 
 pub struct Options {
     pub dry_run: bool,
-    /// Only govern processes started with `LOADLINE_TEST=<scope>` (used by the test suite).
+    /// Only govern processes started with `NODOKA_TEST=<scope>` (used by the test suite).
     pub scope: Option<String>,
 }
 
@@ -61,7 +63,7 @@ pub fn run(opts: Options) {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
     }
     let home = config::dir();
-    fs::create_dir_all(&home).expect("create the loadline folder");
+    fs::create_dir_all(&home).expect("create the nodoka folder");
     rotate_log(&home);
     let ledger = home.join("paused");
     recover(&ledger);
@@ -114,7 +116,7 @@ pub fn run(opts: Options) {
                 recover(&ledger);
                 tracked.clear();
             }
-            write_status(&home, &mut last_status, "loadline is off. Run `loadline on` to turn it back on.\n");
+            write_status(&home, &mut last_status, "nodoka is off. Run `nodoka on` to turn it back on.\n");
             sleep_tick();
             continue;
         }
@@ -134,9 +136,9 @@ pub fn run(opts: Options) {
         for p in procs.iter().filter(|p| p.pid != me) {
             let entry = seen
                 .entry((p.pid, p.id, p.comm.clone()))
-                .or_insert_with(|| (t, look(p.pid, &by_pid, &cfg, opts.scope.as_deref())));
+                .or_insert_with(|| (t, look(p.pid, &cfg, opts.scope.as_deref())));
             if entry.1.is_none() && t.saturating_sub(entry.0) < 10 && entry.0 != t {
-                entry.1 = look(p.pid, &by_pid, &cfg, opts.scope.as_deref());
+                entry.1 = look(p.pid, &cfg, opts.scope.as_deref());
             }
             if let Some(s) = &entry.1 {
                 classified.insert(p.pid, s.kind);
@@ -182,7 +184,7 @@ pub fn run(opts: Options) {
                 tree.iter().filter_map(|&(q, _)| sys::cpu_mem(q)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
             let s = seen.get(&(pid, root.id, root.comm.clone())).and_then(|s| s.1.as_ref());
             let tr = tracked.entry(key).or_insert_with(|| Tracked {
-                // jobs already running when loadline starts are left as they are
+                // jobs already running when nodoka starts are left as they are
                 job: Job { admitted: tick == 1, ..Job::new(kind, t) },
                 tree: vec![],
                 stoppable: vec![],
@@ -197,6 +199,7 @@ pub fn run(opts: Options) {
                 conns: HashSet::new(),
                 last_net: t,
                 snapshot: HashSet::new(),
+                watch: None,
                 noticed: State::Running,
             });
             (tr.mem, tr.tree, tr.stoppable) = (mem, tree, stoppable);
@@ -221,6 +224,7 @@ pub fn run(opts: Options) {
                 tr.last_active = t;
             }
             tr.cpu_ns = cpu;
+            let edited = tr.watch.as_mut().is_some_and(|w| w.changed());
             let j = &mut tr.job;
             j.age_s = t.saturating_sub(tr.first_seen);
             j.terminal = root.tty;
@@ -236,9 +240,10 @@ pub fn run(opts: Options) {
             j.active = t.saturating_sub(tr.last_active) < 5;
             j.sleepable = tr.has_listener && !tr.production;
             j.wake = j.state == State::IdlePaused
-                && sys::sockets(&pids(&tr.tree))
-                    .iter()
-                    .any(|s| s.waiting > 0 && (s.listen || !tr.snapshot.contains(&s.key)));
+                && (edited
+                    || sys::sockets(&pids(&tr.tree))
+                        .iter()
+                        .any(|s| s.waiting > 0 && (s.listen || !tr.snapshot.contains(&s.key))));
         }
 
         // Jobs that ended or changed: never leave anything we stopped behind.
@@ -260,6 +265,11 @@ pub fn run(opts: Options) {
             log(&format!("memory pressure {} → {}", level_name(st.level), level_name(level)));
             (st.level, st.level_since) = (level, t);
         }
+        // Node tools read this at start: short of memory → fewest workers. Rewritten every few
+        // seconds; the preload ignores it once it's 30s old (helper stopped).
+        if !opts.dry_run && (tick % 5 == 1 || st.level_since == t) {
+            fs::write(home.join("pressure"), level.to_string()).ok();
+        }
         st.now = t;
         st.cpu_busy = sys::load1() > cores as f64;
         let keys: Vec<Key> = tracked.keys().copied().collect();
@@ -278,11 +288,14 @@ pub fn run(opts: Options) {
                 if tr.job.state == State::IdlePaused {
                     let socks = sys::sockets(&pids(&tr.tree));
                     tr.snapshot = socks.iter().filter(|s| !s.listen && s.waiting > 0).map(|s| s.key).collect();
+                    tr.watch =
+                        sys::cwd(keys[i].0).and_then(|c| sys::project_root(&c)).and_then(|r| sys::Watch::new(&r));
                 }
             }
             if let Action::Resume(_) = a {
                 (tr.last_active, tr.last_net) = (t, t); // a woken server gets a full idle period again
                 tr.conns.clear();
+                tr.watch = None;
             }
             let what = match a {
                 Action::Pause(_) => "pause",
@@ -322,6 +335,7 @@ pub fn run(opts: Options) {
     }
     log("stopping: resuming everything");
     recover(&ledger);
+    fs::remove_file(home.join("pressure")).ok();
 }
 
 fn sleep_tick() {
@@ -332,27 +346,15 @@ fn pids(keys: &[Key]) -> Vec<i32> {
     keys.iter().map(|k| k.0).collect()
 }
 
-fn look(pid: i32, by_pid: &HashMap<i32, &Proc>, cfg: &Config, scope: Option<&str>) -> Option<Seen> {
-    let (argv, mut env) = sys::args_env(pid)?;
-    let kind = classify::classify(&argv, &cfg.custom)?;
-    // Node tools that rename themselves (`next-build (v16)`, `npm ci`) overwrite the memory their
-    // environment was read from; fall back to the nearest parent's environment.
-    let mut q = pid;
-    for _ in 0..16 {
-        if env.iter().any(|e| e.starts_with("PATH=")) {
-            break;
-        }
-        q = by_pid.get(&q).map_or(0, |p| p.ppid);
-        if q <= 1 {
-            break;
-        }
-        env = sys::args_env(q).map(|(_, e)| e).unwrap_or_default();
-    }
+fn look(pid: i32, cfg: &Config, scope: Option<&str>) -> Option<Seen> {
+    let (argv, env) = sys::args_env(pid)?;
     let var = |name: &str| env.iter().find_map(|e| e.strip_prefix(name)?.strip_prefix('='));
-    if var("LOADLINE_SKIP") == Some("1") {
+    let argv = classify::unwipe(argv, var("npm_lifecycle_script"));
+    let kind = classify::classify(&argv, &cfg.custom)?;
+    if var("NODOKA_SKIP") == Some("1") {
         return None;
     }
-    if scope.is_some() && var("LOADLINE_TEST") != scope {
+    if scope.is_some() && var("NODOKA_TEST") != scope {
         return None;
     }
     let production = [
@@ -397,7 +399,7 @@ fn why(j: &Job, st: &Sys) -> String {
     match j.state {
         State::Queued => "enough heavy jobs are running; it starts when one finishes".into(),
         State::PressurePaused => "memory is critically low".into(),
-        State::IdlePaused => "idle; the next request wakes it".into(),
+        State::IdlePaused => "idle; the next request or saved file wakes it".into(),
         State::Running if j.bg && st.cpu_busy => "all cores are busy".into(),
         State::Running if j.bg => "waited the maximum time, started anyway".into(),
         State::Running => "ok".into(),
@@ -408,14 +410,14 @@ fn why(j: &Job, st: &Sys) -> String {
 fn notice(pid: i32, tr: &mut Tracked, st: &Sys) {
     let msg = match tr.job.state {
         State::Queued => format!(
-            "[loadline] `{}` is waiting for a free slot. It starts on its own within {}s. See `loadline status`.",
+            "[nodoka] `{}` is waiting for a free slot. It starts on its own within {}s. See `nodoka status`.",
             tr.label, st.max_wait_s
         ),
         State::PressurePaused => format!(
-            "[loadline] paused `{}`: memory is critically low. It continues on its own as memory frees up.",
+            "[nodoka] paused `{}`: memory is critically low. It continues on its own as memory frees up.",
             tr.label
         ),
-        State::Running if tr.noticed != State::Running => format!("[loadline] `{}` continues.", tr.label),
+        State::Running if tr.noticed != State::Running => format!("[nodoka] `{}` continues.", tr.label),
         _ => return,
     };
     tr.noticed = tr.job.state;
@@ -461,7 +463,7 @@ fn render(tracked: &HashMap<Key, Tracked>, st: &Sys, cores: usize) -> String {
 
 fn write_status(home: &Path, last: &mut String, s: &str) {
     let tmp = home.join("status.tmp");
-    // rewrite at least every 5s so `loadline status` can tell the helper is alive
+    // rewrite at least every 5s so `nodoka status` can tell the helper is alive
     let stale = mtime(&home.join("status")).and_then(|m| m.elapsed().ok()).is_none_or(|e| e > Duration::from_secs(5));
     if s != last || stale {
         if fs::write(&tmp, s).is_ok() {

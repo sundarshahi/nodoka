@@ -1,4 +1,4 @@
-//! `~/.loadline/config`: optional `key = value` lines. Every setting has a default.
+//! `~/.nodoka/config`: optional `key = value` lines. Every setting has a default.
 
 use crate::classify::{Custom, Kind};
 use crate::sys;
@@ -18,7 +18,7 @@ pub struct Config {
 }
 
 pub const TEMPLATE: &str = "\
-# loadline settings. Every line is optional; delete a line to get the default back.
+# nodoka settings. Every line is optional; delete a line to get the default back.
 # Changes apply within a few seconds. After changing `cpus`, open a new terminal.
 
 # Builds, tests and installs allowed to run at once (default: 1 per 5 GB of memory, at most half your cores).
@@ -27,13 +27,13 @@ pub const TEMPLATE: &str = "\
 # Worker/thread count each tool is told about (default: half your cores, at least 2).
 # cpus = 4
 
-# Idle dev servers sleep after this many minutes and wake on the next request. 0 turns it off.
+# Idle dev servers sleep after this many minutes and wake on the next request or saved file. 0 turns it off.
 # idle_sleep_minutes = 10
 
 # A job waiting for a free slot starts anyway after this many seconds.
 # max_wait_seconds = 60
 
-# Teach loadline about your own tools (program names, comma-separated):
+# Teach nodoka about your own tools (program names, comma-separated):
 # dev = my-server, my-watcher
 # build = my-compiler
 # test = my-test-runner
@@ -42,10 +42,10 @@ pub const TEMPLATE: &str = "\
 ";
 
 pub fn dir() -> PathBuf {
-    if let Ok(d) = std::env::var("LOADLINE_HOME") {
+    if let Ok(d) = std::env::var("NODOKA_HOME") {
         return PathBuf::from(d);
     }
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".loadline")
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".nodoka")
 }
 
 pub fn default_cpus() -> usize {
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn parses_settings_rules_and_reports_mistakes() {
-        let p = std::env::temp_dir().join(format!("loadline-config-test-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("nodoka-config-test-{}", std::process::id()));
         std::fs::write(&p, "heavy_jobs = 2\nidle_sleep_minutes = 0 # off\ndev = My-Server, other\nignore = next\ncpus = lots\nbogus = 1\n").unwrap();
         let c = load(&p);
         std::fs::remove_file(&p).ok();
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn template_is_all_comments() {
-        let p = std::env::temp_dir().join(format!("loadline-template-test-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("nodoka-template-test-{}", std::process::id()));
         std::fs::write(&p, TEMPLATE).unwrap();
         let c = load(&p);
         std::fs::remove_file(&p).ok();

@@ -1,7 +1,13 @@
 use super::{Proc, Sock};
-use libc::{c_int, c_void};
+use libc::{c_char, c_int, c_void};
+use std::collections::HashMap;
+use std::ffi::{CStr, OsStr};
 use std::mem::{size_of, zeroed};
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::ptr::null;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 pub fn procs(uid: u32) -> Vec<Proc> {
     let mut pids = vec![0 as c_int; 16384];
@@ -52,7 +58,12 @@ fn parse_procargs(pid: i32, buf: &mut [u8]) -> Option<(Vec<String>, Vec<String>)
     let argc = i32::from_ne_bytes(buf[..4].try_into().ok()?) as usize;
     let mut parts = buf[4..len].split(|&c| c == 0).skip(1).skip_while(|s| s.is_empty());
     let argv: Vec<String> = parts.by_ref().take(argc).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
-    let env = parts.take_while(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    // a process that renamed itself (process.title) leaves its old argv as zero bytes before the environment
+    let env = parts
+        .skip_while(|s| s.is_empty())
+        .take_while(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
     Some((argv, env))
 }
 
@@ -136,12 +147,133 @@ fn sysctl_u64(name: &str) -> Option<u64> {
         .then(|| if len == 4 { u32::from_ne_bytes(v[..4].try_into().unwrap()) as u64 } else { u64::from_ne_bytes(v) })
 }
 
-/// macOS background priority: lowest CPU priority, efficiency cores, throttled disk I/O.
-/// Unlike `nice`, it can be undone without root.
-pub fn set_bg(pid: i32, on: bool) {
-    unsafe {
-        libc::setpriority(libc::PRIO_DARWIN_PROCESS, pid as libc::id_t, if on { libc::PRIO_DARWIN_BG } else { 0 })
-    };
+/// A process's working folder.
+pub fn cwd(pid: i32) -> Option<PathBuf> {
+    let mut v: libc::proc_vnodepathinfo = unsafe { zeroed() };
+    let sz = size_of::<libc::proc_vnodepathinfo>() as c_int;
+    let r = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, &mut v as *mut _ as *mut c_void, sz) };
+    let path = unsafe { CStr::from_ptr(v.pvi_cdir.vip_path.as_ptr() as *const c_char) }.to_bytes();
+    (r == sz && !path.is_empty()).then(|| PathBuf::from(OsStr::from_bytes(path)))
+}
+
+/// Notices file changes under a folder (FSEvents: recursive, no polling). Changes only in
+/// dependency, build-output and cache folders are ignored.
+pub struct Watch {
+    stream: *mut c_void,
+    id: usize,
+}
+
+/// watch id → (folder, changed since last asked). FSEvents calls back on its own thread.
+static WATCHES: Mutex<Option<HashMap<usize, (PathBuf, bool)>>> = Mutex::new(None);
+
+#[repr(C)]
+struct StreamContext {
+    version: isize,
+    info: *mut c_void,
+    retain: *const c_void,
+    release: *const c_void,
+    describe: *const c_void,
+}
+
+type Callback = extern "C" fn(*const c_void, *mut c_void, usize, *mut c_void, *const u32, *const u64);
+
+#[link(name = "CoreServices", kind = "framework")]
+unsafe extern "C" {
+    fn FSEventStreamCreate(
+        a: *const c_void,
+        cb: Callback,
+        ctx: *const StreamContext,
+        paths: *const c_void,
+        since: u64,
+        latency: f64,
+        flags: u32,
+    ) -> *mut c_void;
+    fn FSEventStreamSetDispatchQueue(s: *mut c_void, q: *mut c_void);
+    fn FSEventStreamStart(s: *mut c_void) -> u8;
+    fn FSEventStreamStop(s: *mut c_void);
+    fn FSEventStreamInvalidate(s: *mut c_void);
+    fn FSEventStreamRelease(s: *mut c_void);
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringCreateWithBytes(a: *const c_void, b: *const u8, n: isize, encoding: u32, external: u8) -> *const c_void;
+    fn CFArrayCreate(a: *const c_void, v: *const *const c_void, n: isize, cb: *const c_void) -> *const c_void;
+    fn CFRelease(p: *const c_void);
+    static kCFTypeArrayCallBacks: [usize; 5];
+}
+
+unsafe extern "C" {
+    fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> *mut c_void;
+}
+
+extern "C" fn on_events(
+    _: *const c_void,
+    info: *mut c_void,
+    n: usize,
+    paths: *mut c_void,
+    _: *const u32,
+    _: *const u64,
+) {
+    let paths = paths as *const *const c_char;
+    let mut w = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((root, changed)) = w.as_mut().and_then(|m| m.get_mut(&(info as usize))) else { return };
+    for i in 0..n {
+        let p = Path::new(OsStr::from_bytes(unsafe { CStr::from_ptr(*paths.add(i)) }.to_bytes()));
+        // a path outside the folder (different spelling) counts: better a needless wake than a missed one
+        let quiet = p.strip_prefix(&*root).is_ok_and(|rel| rel.iter().any(|c| super::quiet(&c.to_string_lossy())));
+        *changed |= !quiet;
+    }
+}
+
+impl Watch {
+    pub fn new(root: &Path) -> Option<Watch> {
+        static NEXT: AtomicUsize = AtomicUsize::new(1);
+        static QUEUE: OnceLock<usize> = OnceLock::new();
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let queue = *QUEUE.get_or_init(|| unsafe { dispatch_queue_create(c"nodoka.watch".as_ptr(), null()) } as usize);
+        WATCHES.lock().ok()?.get_or_insert_default().insert(id, (root.to_path_buf(), false));
+        let bytes = root.as_os_str().as_bytes();
+        let ctx =
+            StreamContext { version: 0, info: id as *mut c_void, retain: null(), release: null(), describe: null() };
+        let stream = unsafe {
+            let path =
+                CFStringCreateWithBytes(null(), bytes.as_ptr(), bytes.len() as isize, 0x0800_0100 /* UTF-8 */, 0);
+            let list = CFArrayCreate(null(), &path, 1, (&raw const kCFTypeArrayCallBacks).cast());
+            // since now, 0.2s latency, NoDefer (first event at once) | FileEvents (one path per file)
+            let s = FSEventStreamCreate(null(), on_events, &ctx, list, u64::MAX, 0.2, 0x02 | 0x10);
+            CFRelease(list);
+            CFRelease(path);
+            s
+        };
+        let w = Watch { stream, id }; // from here on, Drop cleans up
+        if stream.is_null() {
+            return None;
+        }
+        unsafe { FSEventStreamSetDispatchQueue(stream, queue as *mut c_void) };
+        (unsafe { FSEventStreamStart(stream) } != 0).then_some(w)
+    }
+
+    /// Whether anything that matters changed since the last call.
+    pub fn changed(&mut self) -> bool {
+        let mut w = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+        w.as_mut().and_then(|m| m.get_mut(&self.id)).is_some_and(|e| std::mem::take(&mut e.1))
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if !self.stream.is_null() {
+            unsafe {
+                FSEventStreamStop(self.stream);
+                FSEventStreamInvalidate(self.stream);
+                FSEventStreamRelease(self.stream);
+            }
+        }
+        if let Some(m) = WATCHES.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            m.remove(&self.id);
+        }
+    }
 }
 
 /// The terminal device a process is attached to, for a one-line notice.

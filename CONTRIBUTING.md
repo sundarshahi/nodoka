@@ -1,9 +1,9 @@
-# Contributing to loadline
+# Contributing to nodoka
 
 Thanks for helping. The most useful contributions, in order:
 
-1. **A tool loadline doesn't recognise.** Usually a one-line rule and a one-line test.
-2. **Bug reports** with `loadline status`, `loadline explain <pid>` and `~/.loadline/log`.
+1. **A tool nodoka doesn't recognise.** Usually a one-line rule and a one-line test.
+2. **Bug reports** with `nodoka status`, `nodoka explain <pid>` and `~/.nodoka/log`.
 3. **Windows support** (see [docs/how-it-works.md](docs/how-it-works.md#platform-notes)).
 
 Please read [docs/how-it-works.md](docs/how-it-works.md) before changing behaviour: most rules exist
@@ -14,14 +14,14 @@ because of something measured.
 You need Rust 1.85 or newer on macOS or Linux.
 
 ```sh
-git clone https://github.com/sundarshahi/loadline
-cd loadline
+git clone https://github.com/sundarshahi/nodoka
+cd nodoka
 cargo test
 ```
 
 `cargo test` runs the unit tests and the end-to-end tests in [`tests/daemon.rs`](tests/daemon.rs). The
 end-to-end tests start a real helper that only governs the fake jobs they start (it is scoped with
-`--test <name>` and its own `LOADLINE_HOME`), so they are safe to run on your own machine. They take
+`--test <name>` and its own `NODOKA_HOME`), so they are safe to run on your own machine. They take
 about 10 seconds.
 
 To run the Linux tests from a Mac:
@@ -46,13 +46,13 @@ cargo run -- explain bin/rails server
 | `src/daemon.rs` | The loop: find jobs, measure, decide, act, write status. |
 | `src/sys/macos.rs`, `src/sys/linux.rs` | Process, socket and memory facts; pause, resume, priority. |
 | `src/setup.rs` | `install` / `uninstall`: shell files, editor settings, login service. |
-| `src/config.rs` | `~/.loadline/config`. |
+| `src/config.rs` | `~/.nodoka/config`. |
 | `preload/preload.cjs` | The Node/Bun preload that lowers worker counts. |
 | `tests/daemon.rs`, `examples/fakejob.rs` | End-to-end tests and the fake tool they drive. |
 
 ## Adding a tool
 
-1. Find out what loadline sees: start the tool, then run `loadline explain <pid>`. The command line may
+1. Find out what nodoka sees: start the tool, then run `nodoka explain <pid>`. The command line may
    differ from what you typed: interpreters (`node …/vite.js`), wrappers (`bundle exec`) or a renamed
    process (`puma 8.0.3 (tcp://…)`).
 2. Add a rule in `rule()` in `src/classify.rs`, next to its ecosystem. Use `pick(sub, …)` for
@@ -66,7 +66,7 @@ Choosing a kind:
 - **build** and **test** — run and finish. Admitted a few at a time; paused at critical memory.
 - **dev** — runs until stopped (servers, watchers). Never queued; sleeps when idle if it has a port.
 
-When unsure, leave the tool unrecognised. A tool loadline ignores costs nothing; one it gets wrong can
+When unsure, leave the tool unrecognised. A tool nodoka ignores costs nothing; one it gets wrong can
 pause something it shouldn't.
 
 ## Before you open a pull request

@@ -1,5 +1,5 @@
 name: A tool isn't recognised
-description: loadline ignores (or misjudges) a dev server, build, test runner or installer.
+description: nodoka ignores (or misjudges) a dev server, build, test runner or installer.
 labels: [tool-rule]
 body:
   - type: input
@@ -12,8 +12,8 @@ body:
   - type: textarea
     id: explain
     attributes:
-      label: Output of `loadline explain <pid>` while it runs
-      description: This shows the command line loadline actually sees, which is what the rule must match.
+      label: Output of `nodoka explain <pid>` while it runs
+      description: This shows the command line nodoka actually sees, which is what the rule must match.
       render: text
     validations:
       required: true

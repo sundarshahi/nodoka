@@ -1,6 +1,6 @@
-# How loadline works
+# How nodoka works
 
-This is the design document: what loadline does, why each decision was made, and the evidence behind
+This is the design document: what nodoka does, why each decision was made, and the evidence behind
 it. Read it before changing behaviour.
 
 ## The problem
@@ -11,13 +11,13 @@ worktrees in parallel. Each tool sizes its worker pool from the core count, so f
 laptop can mean 45 worker processes. Next.js alone reports `next dev` processes of 7–30 GB in
 [vercel/next.js#91396](https://github.com/vercel/next.js/issues/91396).
 
-loadline's promise: **the machine stays responsive; work may run slower or wait its turn; nothing is
+nodoka's promise: **the machine stays responsive; work may run slower or wait its turn; nothing is
 killed and no feature is lost; nobody has to learn a new command.**
 
 ## Approaches considered
 
 1. **A layer around the real tools (chosen).** The real Node, Ruby, Python, Go… run unchanged
-   underneath; loadline only adjusts worker counts and decides when processes run.
+   underneath; nodoka only adjusts worker counts and decides when processes run.
 2. **Replace the runtime** (for example Bun for Node). Lighter per process, but parts of Next.js and
    native add-ons break, and it only helps one ecosystem.
 3. **Run everything inside a small VM**, the way [Kiri](https://github.com/libracoder/kiri) and
@@ -30,7 +30,7 @@ idle sleep with sub-second wake, and integration that is opt-in and reversible.
 ## Part 1: fewer workers per tool
 
 Most tools pick their worker count from `os.cpus()`, `os.availableParallelism()` or the CPU count.
-loadline lowers what they see, to half the cores (at least 2, because many tools compute `cpus - 1`).
+nodoka lowers what they see, to half the cores (at least 2, because many tools compute `cpus - 1`).
 
 - **Node and Bun:** [`preload/preload.cjs`](../preload/preload.cjs) is loaded into every Node process
   through `NODE_OPTIONS=--require=…` (Bun: `BUN_OPTIONS=--preload=…`). It replaces both
@@ -40,7 +40,7 @@ loadline lowers what they see, to half the cores (at least 2, because many tools
   ([Node docs](https://github.com/nodejs/node/blob/108cbef0df492e8fb790942f608e8ca802564af3/doc/api/cli.md#L2980-L3001)),
   and Next keeps `--require` when it rebuilds `NODE_OPTIONS` for its workers. Measured cost: 0.7 ms per
   Node start. It is skipped inside Electron apps, which reject `NODE_OPTIONS`.
-- **Native tools** read environment variables, set by `~/.loadline/env.sh` only when unset (each one can
+- **Native tools** read environment variables, set by `~/.nodoka/env.sh` only when unset (each one can
   only lower a default, never raise it):
 
 | Variable | Affects |
@@ -86,30 +86,34 @@ Things that make recognition hard, and how they are handled:
   `next-build (v16.4.5)`, npm becomes `npm ci`, gunicorn becomes `gunicorn: master [app]`. Renamed
   forms have their own rules. A process that isn't recognised is looked at again during its first 10
   seconds, because renaming happens at startup.
-- **Renaming wipes the environment view.** On macOS and Linux, Node's process title is written over the
-  memory where the environment strings were, so `LOADLINE_SKIP` and `NODE_ENV` can't be read from a
-  renamed process. loadline falls back to the nearest parent's environment.
+- **Renaming to a bare name wipes the arguments.** webpack-cli sets its title to just `webpack`, so
+  `webpack serve` (a dev server) would look like `webpack` (a build). Node writes the title over the
+  argument strings and fills the rest with zero bytes; the environment after them survives. When a
+  package script started the tool, npm, yarn, pnpm and bun leave the command in `npm_lifecycle_script`,
+  and nodoka takes the tool's arguments from there. (On macOS the zero fill also hid the environment
+  until nodoka learned to skip it, so `NODOKA_SKIP` and `NODE_ENV` are read from renamed tools too.)
 - **A shell that becomes the tool:** `zsh -c 'npm ci && next build'` execs into `next build` at the end,
   keeping the shell's pid and start time. The cache key includes the program name, which changes on exec,
-  so the process is looked at again; and a job's age counts from when loadline first saw it, not from
+  so the process is looked at again; and a job's age counts from when nodoka first saw it, not from
   process start.
 - **Gradle, Kotlin and Bazel** do their work in a long-lived server process, not in the command you
-  typed. loadline governs that server.
+  typed. nodoka governs that server.
 
 ### Deciding
 
 [`src/policy.rs`](../src/policy.rs) is pure — no system calls — so every rule has a unit test.
 
 - **Admission.** At most `heavy_jobs` builds, tests and installs run at once (default: one per 5 GB of
-  memory, at most half the cores); at memory-pressure *warn* the limit is halved, rounding up. A heavy
-  job that starts when the slots are full is paused within its first seconds and resumed first-in,
-  first-out. No job waits longer than `max_wait_seconds` (60): coding agents have command timeouts, and a
+  memory, at most half the cores); at memory-pressure *warn* the limit is halved, rounding up. A build or
+  install that starts when the slots are full is paused within its first second and resumed first-in,
+  first-out. Test runs never wait (see below) but take a slot. No job waits longer than `max_wait_seconds` (60): coding agents have command timeouts, and a
   job that times out gets retried, which adds load. Jobs already running when the helper starts are
   left as they are.
 - **Low-memory brake.** Only at *critical* pressure: on a busy 16 GB Mac, *warn* can be the normal state
   for hours, and acting on it would make jobs stutter. One job is paused every 5 seconds, newest first,
-  builds and tests only — a paused install would have its downloads time out. Paused jobs are resumed
-  one by one after 20 calm seconds, and never stay paused longer than 10 minutes.
+  busy builds and tests only — a paused install would have its downloads time out, and pausing an idle
+  job (a `webpack --watch` between rebuilds) stops nothing from growing. Paused jobs are resumed one by
+  one after 20 calm seconds, and never stay paused longer than 10 minutes.
 - **Idle sleep.** A job whose processes listen on a TCP port is a server. It counts as busy while it uses
   more than about 2% of a core or a visitor connects. After `idle_sleep_minutes` (10) without either, it
   is paused. A server that keeps the CPU busy with nobody visiting (a polling file watcher, a runaway
@@ -122,7 +126,7 @@ Things that make recognition hard, and how they are handled:
 ### Waking a sleeping server
 
 A paused process can't accept connections, but the kernel still completes TCP handshakes into the
-listening socket's accept queue. Every second, loadline reads the TCP sockets of sleeping servers:
+listening socket's accept queue. Every second, nodoka reads the TCP sockets of sleeping servers:
 
 - **macOS:** `proc_pidinfo(PROC_PIDLISTFDS)` + `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`; for a listening
   socket, `soi_qlen + soi_incqlen` is the queue length.
@@ -135,25 +139,42 @@ acceptor threads) take the connection off the queue even while paused, so the qu
 bytes are then waiting on a new connected socket instead. So a server is woken when a listening socket has
 a queue, **or** a connection has unread data that wasn't there when it went to sleep. Measured wake: 0.57–0.99 s.
 
+**Saving a file wakes it too.** Found by testing a real Vite + React server: a request wakes a sleeping
+server, but saving a file doesn't send one. The server's own file watcher is paused, so hot reload never
+reached the open tab (nothing after 45 s), and a Django or Rails server woken later by a request could
+answer once with old code before its reloader caught up. So while a server sleeps, nodoka watches its
+project — the git checkout around its working folder, so edits in a sibling package count, or the working
+folder itself; never the home folder — and wakes it on the first change. Changes inside dependency,
+build-output, cache and log folders (`node_modules`, `.git`, `target`, `dist`, `.next`, `tmp`, `log`…)
+don't count, so another job's build can't keep waking it. The watch exists only while the server sleeps:
+
+- **macOS:** one FSEvents stream per sleeping server (recursive, kernel-fed, no polling).
+- **Linux:** inotify, one watch per folder — the skipped folders are also never walked, so a
+  `node_modules` with thousands of folders costs nothing; at most 4096 folders per server.
+
+Measured on real servers: the hot update reached a Vite + React tab 0.95 s after the save; Vue, React
+Router, webpack, Angular, Next.js, Rails and Django woke 0.59–0.84 s after a save.
+
 ### Acting
 
 - **Pause and resume:** `SIGSTOP`/`SIGCONT` to every process in the job. Children forked while a job
   is paused are paused on the next tick. On macOS there is no way for an ordinary user to cap a
   process's memory (`RLIMIT_RSS` is not enforced), so pausing is the only tool.
 - **Never the process a shell waits on.** An interactive shell (one with a terminal) reports a stopped
-  child as "suspended" and takes the prompt back, so loadline never stops a direct child of an
+  child as "suspended" and takes the prompt back, so nodoka never stops a direct child of an
   interactive shell. It pauses that child's own children instead (for `npm run build`, the build process
   itself). If nothing else is left, the job is not paused at all. Measured: non-interactive zsh, bash and
   sh running a command in the foreground — what coding agents do — don't notice a pause at all (exit
   status 0, correct timing). The one exception found is zsh's `cmd & wait $!`, which returns 145.
 - **Terminal notices.** When a job started from a terminal has to wait or is paused for memory, one line
   is written to that terminal, and another when it continues.
-- **Lower priority:** macOS background priority (`PRIO_DARWIN_BG`: lowest CPU priority, efficiency
-  cores, throttled disk I/O), which an ordinary user can switch off again; `nice` can't be undone without
-  root. On Linux there is no reversible equivalent for ordinary users, so loadline uses nice 10 and the
-  job keeps it until it ends.
+- **Lower priority:** nice 10, on both systems. It yields to your apps only while cores are contested
+  and costs nothing otherwise; an ordinary user can't raise it back, so the job keeps it until it ends.
+  macOS's background priority (`PRIO_DARWIN_BG`) was used first because it can be undone, but it confines
+  work to the efficiency cores: three `next build`s run at once took 40–42 s under it, against 8–9 s at
+  normal priority and 7 s at nice 10.
 - **Crash safety.** Before any signal, the processes about to be paused or lowered are written to
-  `~/.loadline/paused`. On start, stop, `loadline off` and `loadline uninstall`, everything in that file
+  `~/.nodoka/paused`. On start, stop, `nodoka off` and `nodoka uninstall`, everything in that file
   is resumed. Processes are identified by pid *and* start time, so a reused pid is never touched.
 
 ### Memory pressure
@@ -165,6 +186,38 @@ a queue, **or** a connection has unread data that wasn't there when it went to s
   [earlyoom](https://github.com/rfjakob/earlyoom) (kills at 10% available and 10% free swap) and
   [systemd-oomd](https://www.freedesktop.org/software/systemd/man/latest/oomd.conf.html) (kills at 60%
   pressure for 30 s) — and pauses rather than kills.
+- **Tools adapt to it.** The helper writes the current level to `~/.nodoka/pressure` every few seconds.
+  A Node tool that starts while the level is *warn* or worse is told about 2 CPUs instead of half the
+  cores, so it starts the fewest workers: a real `next build` peaked at 0.57–0.69 GB instead of
+  1.0–1.1 GB. The preload ignores the file once it is 30 s old, so a stopped helper changes nothing.
+- **Why only builds are paused, never tests.** Clocks keep running while a process is paused. A test run
+  paused mid-test fails its per-test timeouts on resume (5 s in [Jest](https://jestjs.io/docs/configuration#testtimeout-number)
+  and [Vitest](https://vitest.dev/config/testtimeout)). Builds survive it: Next.js retries a static page
+  that took too long ([export/worker.ts](https://github.com/vercel/next.js/blob/v16.4.5/packages/next/src/export/worker.ts#L489-L531)).
+  Holding test runs only at start isn't safe either: the helper looks once a second, and a real Vitest
+  suite (60 tests, 1.8 s) held behind a build failed 9 tests in one run out of three. So test runs never
+  wait; they still take a slot, so builds and installs wait for them. Measured after the change: 3 out of
+  3 runs passed.
+
+### Less memory per process
+
+Set in the shell startup file, only when you haven't set them yourself:
+
+- **`--max-semi-space-size=16` in `NODE_OPTIONS`.** Node 24 made V8's young generation four times
+  bigger: 64 MB semi-spaces instead of 16 ([Node 22](https://github.com/nodejs/node/blob/v22.21.1/deps/v8/src/flags/flag-definitions.h#L808),
+  [Node 24](https://github.com/nodejs/node/blob/v24.13.0/deps/v8/src/flags/flag-definitions.h#L913-L928)),
+  so each busy Node process can hold 96 MB more. 16 is Node 22's default: on an allocation-heavy test it
+  cut peak memory 35% at the same speed. It is one of the few V8 flags Node accepts in `NODE_OPTIONS`
+  ([allowlist](https://github.com/nodejs/node/blob/v24.13.0/doc/api/cli.md#L3567-L3592)); Next.js passes it on
+  to its workers. Machines under 8 GB get 8 so it never raises V8's own default. The heap limit is not
+  touched: a hard cap (`--max-old-space-size`) would crash big builds with "JavaScript heap out of memory".
+- **`--smol` in `BUN_OPTIONS`.** Bun's documented low-memory mode: 27% less on the same test.
+- **`MALLOC_ARENA_MAX=2` on Linux.** glibc gives threads up to 8 malloc arenas per core; 2 is the usual
+  fix for Ruby, Python and other many-threaded programs ([glibc](https://sourceware.org/glibc/manual/latest/html_node/Memory-Allocation-Tunables.html)).
+
+What isn't possible: going much below a build's working set. Every remaining knob is a hard cap that
+crashes the build or a feature switched off. For one `next build`, nodoka's ceiling is about −60%;
+across the machine, when several jobs pile up, turn-taking is what takes the peak down 70–90%.
 
 ## Part 3: editors
 
@@ -173,22 +226,22 @@ VS Code's default `files.watcherExclude` no longer excludes `node_modules`
 so an `npm ci` inside an open folder floods the file watcher. Agent worktrees inside the project make it
 worse: one project reported a 2.7 GB dev-server heap from watching `.claude/worktrees`, down to 819 MB
 after excluding it ([datagouv/cdata#1305](https://github.com/datagouv/cdata/pull/1305)).
-`loadline install` adds a marked `files.watcherExclude` entry to VS Code, Cursor, Windsurf and VSCodium
-settings when they don't have one; `loadline uninstall` removes exactly that entry.
+`nodoka install` adds a marked `files.watcherExclude` entry to VS Code, Cursor, Windsurf and VSCodium
+settings when they don't have one; `nodoka uninstall` removes exactly that entry.
 
 ## Prior art
 
 - [Kiri](https://runkiri.com/) and [OrbStack](https://orbstack.dev/): lightweight Docker runtimes; the
   model for "tiny, invisible, reversible".
 - [puma-dev](https://github.com/puma/puma-dev) and [portless](https://github.com/vercel-labs/portless):
-  start dev servers on demand behind a proxy. loadline needs no proxy: the kernel queues connections
+  start dev servers on demand behind a proxy. nodoka needs no proxy: the kernel queues connections
   for a paused server.
 - [earlyoom](https://github.com/rfjakob/earlyoom), [systemd-oomd](https://www.freedesktop.org/software/systemd/man/latest/systemd-oomd.service.html),
-  [nohang](https://github.com/hakavlad/nohang): kill processes under memory pressure. loadline pauses
+  [nohang](https://github.com/hakavlad/nohang): kill processes under memory pressure. nodoka pauses
   instead, and only dev work.
 - [cpulimit](https://github.com/opsengine/cpulimit): limits CPU with `SIGSTOP`/`SIGCONT` cycles.
 - [Volta](https://github.com/volta-cli/volta) and [mise](https://mise.jdx.dev/): transparent tool shims;
-  loadline uses a Node preload and environment variables instead, so it works whichever version
+  nodoka uses a Node preload and environment variables instead, so it works whichever version
   manager installed Node.
 
 ## Platform notes
@@ -198,7 +251,7 @@ settings when they don't have one; `loadline uninstall` removes exactly that ent
 | Processes | `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`, `sysctl KERN_PROCARGS2` | `/proc/<pid>/stat`, `cmdline`, `environ` |
 | Memory per process | physical footprint (`proc_pid_rusage`), Activity Monitor's "Memory" | resident minus shared pages (`/proc/<pid>/statm`) |
 | CPU time | `proc_pid_rusage`, scaled by `mach_timebase_info` on Apple silicon | `/proc/<pid>/stat`, clock ticks |
-| Start at login | LaunchAgent `loadline` | systemd user service `loadline` |
+| Start at login | LaunchAgent `nodoka` | systemd user service `nodoka` |
 
 Windows is planned: Job objects and `NtSuspendProcess` for pausing, `SetPriorityClass` and EcoQoS for
 priority, `GlobalMemoryStatusEx` for pressure. It has no API for a socket's accept-queue length, so idle

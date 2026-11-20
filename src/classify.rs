@@ -87,6 +87,27 @@ pub fn untitle(argv: &[String]) -> Vec<String> {
     }
 }
 
+/// A tool that renamed itself to a bare name (webpack-cli sets its title to just "webpack") wiped
+/// its arguments, so `webpack serve` would look like a build. When a package script started it,
+/// npm, yarn, pnpm and bun leave the command in `npm_lifecycle_script`: take the tool's arguments
+/// from there.
+pub fn unwipe(argv: Vec<String>, script: Option<&str>) -> Vec<String> {
+    let (Some(script), Some(first)) = (script, argv.first()) else { return argv };
+    if first.trim().contains(' ') || !argv[1..].iter().all(|a| a.trim().is_empty()) {
+        return argv;
+    }
+    let tool = stem(first.trim());
+    let words: Vec<&str> = script.split_whitespace().collect();
+    match words.iter().position(|w| stem(w) == tool) {
+        Some(i) => words[i..]
+            .iter()
+            .take_while(|w| !matches!(**w, "&&" | "||" | ";" | "|" | "&"))
+            .map(|w| w.to_string())
+            .collect(),
+        None => argv,
+    }
+}
+
 const SHELL_RUNNERS: &[&str] = &["node", "ruby", "python", "php", "perl"];
 
 /// Find the tool doing the work: look through interpreters (node, ruby, python, java, beam…)
@@ -424,7 +445,21 @@ pub fn rule(tool: &str, rest: &[String]) -> Option<Kind> {
         "webpack" | "webpack-cli" => Some(if watch || matches!(sub, "serve" | "s" | "server") { Dev } else { Build }),
         "webpack-dev-server" | "nodemon" | "ts-node-dev" | "tsnd" | "node-dev" | "serve" | "http-server"
         | "live-server" | "lite-server" | "json-server" | "browser-sync" | "sirv" | "servor" | "start-storybook"
-        | "pm2-dev" => Some(Dev),
+        | "pm2-dev" | "web-dev-server" | "wds" | "react-router-serve" | "remix-serve" => Some(Dev),
+        "tauri" | "electron-vite" | "ionic" | "snowpack" | "umi" => {
+            pick(sub, &[(&["dev", "serve", "preview", "start"], Dev), (&["build"], Build)])
+        }
+        "electron-forge" => pick(sub, &[(&["start"], Dev), (&["make", "package", "publish"], Build)]),
+        "electron-builder" => Some(Build),
+        "ember" => pick(
+            sub,
+            &[
+                (&["serve", "server", "s"], Dev),
+                (&["build", "b"], Build),
+                (&["test", "t"], Test),
+                (&["install"], Install),
+            ],
+        ),
         "rspack" | "rsbuild" | "farm" => {
             pick(sub, &[(&["dev", "serve", "preview", "start"], Dev), (&["", "build"], Build)])
         }
@@ -785,6 +820,22 @@ mod tests {
         assert_eq!(classify(&["next-build (v16.4.5)".to_string()], &Custom::new()), Some(Build));
         assert_eq!(classify(&["next-server (v16.4.5)".to_string()], &Custom::new()), Some(Dev));
         assert_eq!(classify(&["npm ci".to_string()], &Custom::new()), Some(Install)); // npm's own title
+        // Angular renames itself but keeps its arguments in the title
+        let titled = |t: &str| classify(&[t.to_string(), String::new(), String::new()], &Custom::new());
+        assert_eq!(titled("ng serve (my-app)"), Some(Dev));
+        assert_eq!(c("node /x/.bin/react-router-serve ./build/server/index.js"), Some(Dev));
+        assert_eq!(c("node /x/react-scripts/bin/react-scripts.js start"), Some(Dev));
+        assert_eq!(c("node /x/.bin/react-scripts test --watchAll=false"), Some(Test));
+        assert_eq!(c("node /x/.bin/expo start --clear"), Some(Dev));
+        assert_eq!(c("node /x/.bin/react-native run-ios"), Some(Build));
+        assert_eq!(c("node /x/.bin/storybook dev -p 6006"), Some(Dev));
+        assert_eq!(c("node /x/.bin/tauri dev"), Some(Dev));
+        assert_eq!(c("node /x/.bin/electron-forge start"), Some(Dev));
+        assert_eq!(c("node /x/.bin/ember s"), Some(Dev));
+        assert_eq!(c("node /x/.bin/vue-cli-service serve"), Some(Dev));
+        assert_eq!(c("node /x/.bin/astro dev --port 4321"), Some(Dev));
+        assert_eq!(c("node /x/.bin/nuxi dev"), Some(Dev));
+        assert_eq!(c("node /x/.bin/gatsby develop"), Some(Dev));
         assert_eq!(c("node --test"), Some(Test));
         assert_eq!(c("node --watch server.js"), Some(Dev));
         assert_eq!(c("bun --hot server.ts"), Some(Dev));
@@ -892,6 +943,24 @@ mod tests {
         assert_eq!(c("just fmt"), None);
         assert_eq!(c("docker compose up"), None);
         assert_eq!(c("postgres -D /x"), None);
+    }
+
+    #[test]
+    fn renamed_tools_get_their_arguments_back_from_the_package_script() {
+        use Kind::*;
+        // webpack-cli sets its title to a bare "webpack": what nodoka reads on macOS / Linux
+        let mac = || vec!["webpack".to_string(), String::new(), String::new(), String::new()];
+        let k = |argv: Vec<String>, script: Option<&str>| classify(&unwipe(argv, script), &Custom::new());
+        assert_eq!(k(mac(), None), Some(Build), "nothing to go on: a bare `webpack` is a build");
+        assert_eq!(k(mac(), Some("webpack serve --mode development")), Some(Dev));
+        assert_eq!(k(vec!["webpack".into()], Some("cross-env NODE_ENV=dev webpack --watch && echo")), Some(Dev));
+        assert_eq!(k(mac(), Some("tsc -b && webpack --mode production")), Some(Build));
+        // a tool that wasn't renamed keeps its own arguments, whatever script started it
+        let real = "node /x/.bin/vite build".split(' ').map(String::from).collect::<Vec<_>>();
+        assert_eq!(unwipe(real.clone(), Some("vite")), real);
+        // titles with words (npm, Next, puma) are left to `untitle`
+        let npm = vec!["npm ci".to_string(), String::new()];
+        assert_eq!(unwipe(npm.clone(), Some("npm ci && npm run build")), npm);
     }
 
     #[test]

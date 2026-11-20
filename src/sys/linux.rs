@@ -1,8 +1,9 @@
 use super::{Proc, Sock};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 fn clk_tck() -> u64 {
@@ -153,11 +154,73 @@ pub fn mem_bytes() -> u64 {
     meminfo().get("MemTotal").copied().unwrap_or(8 << 30)
 }
 
-/// Lower CPU priority (nice 10). Linux only lets an ordinary user raise priority back within
-/// RLIMIT_NICE, so the restore usually fails: the job then stays nice until it ends, which only
-/// matters while the CPU is contended.
-pub fn set_bg(pid: i32, on: bool) {
-    unsafe { libc::setpriority(libc::PRIO_PROCESS as _, pid as libc::id_t, if on { 10 } else { 0 }) };
+/// A process's working folder.
+pub fn cwd(pid: i32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+/// Notices file changes under a folder with inotify (no polling). inotify watches one folder at a
+/// time, so every subfolder gets a watch — except dependency, build-output and cache folders.
+pub struct Watch {
+    fd: i32,
+}
+
+impl Watch {
+    pub fn new(root: &Path) -> Option<Watch> {
+        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        if fd < 0 {
+            return None;
+        }
+        let w = Watch { fd };
+        let mask = libc::IN_MODIFY
+            | libc::IN_CLOSE_WRITE
+            | libc::IN_CREATE
+            | libc::IN_DELETE
+            | libc::IN_MOVED_FROM
+            | libc::IN_MOVED_TO;
+        let (mut dirs, mut watched) = (vec![root.to_path_buf()], 0);
+        // ponytail: 4096 folders max; past that, edits deep in a huge tree only wake on the next request
+        while let Some(d) = dirs.pop().filter(|_| watched < 4096) {
+            let Ok(c) = std::ffi::CString::new(d.as_os_str().as_bytes()) else { continue };
+            if unsafe { libc::inotify_add_watch(fd, c.as_ptr(), mask) } < 0 {
+                continue;
+            }
+            watched += 1;
+            for e in fs::read_dir(&d).into_iter().flatten().flatten() {
+                if e.file_type().is_ok_and(|t| t.is_dir()) && !super::quiet(&e.file_name().to_string_lossy()) {
+                    dirs.push(e.path());
+                }
+            }
+        }
+        (watched > 0).then_some(w)
+    }
+
+    /// Whether anything that matters changed since the last call.
+    pub fn changed(&mut self) -> bool {
+        let mut buf = [0u8; 8192];
+        let mut hit = false;
+        loop {
+            let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n <= 0 {
+                return hit;
+            }
+            // struct inotify_event: wd, mask, cookie, len (4 bytes each), then a NUL-padded name
+            let mut at = 0;
+            while at + 16 <= n as usize {
+                let len = u32::from_ne_bytes(buf[at + 12..at + 16].try_into().unwrap()) as usize;
+                let name = buf.get(at + 16..at + 16 + len).unwrap_or_default();
+                let name = String::from_utf8_lossy(name.split(|&c| c == 0).next().unwrap_or_default());
+                hit |= !super::quiet(&name);
+                at += 16 + len;
+            }
+        }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.fd) }; // closing removes every watch
+    }
 }
 
 /// The terminal device a process is attached to, for a one-line notice.

@@ -15,7 +15,7 @@ pub struct Job {
     pub kind: Kind,
     pub age_s: u64,
     /// Started from a terminal (has a controlling tty). Such jobs are never lowered in priority,
-    /// and loadline never stops the process a shell is waiting on (see `daemon::protected`).
+    /// and nodoka never stops the process a shell is waiting on (see `daemon::protected`).
     pub terminal: bool,
     /// Something in the tree can be stopped without a shell noticing.
     pub pausable: bool,
@@ -106,7 +106,9 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         if j.admitted || !j.kind.heavy() || j.state != State::Running {
             continue;
         }
-        if !j.pausable || j.age_s > ADMIT_WINDOW_S || running < cap {
+        // Test runs never wait: clocks keep running while a process is paused, and a real Vitest run
+        // held at start failed 9 of 60 tests on their 5s timeouts. They still take a slot.
+        if !j.pausable || j.kind == Kind::Test || j.age_s > ADMIT_WINDOW_S || running < cap {
             j.admitted = true;
             running += 1;
         } else {
@@ -134,12 +136,14 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     }
 
     // 3. memory brake: only at critical pressure (warn can be the normal state on a busy laptop).
-    //    Builds and tests only: a paused install would hit network timeouts.
+    //    Busy builds only. Clocks keep running while a process is paused, so a paused test run would
+    //    fail its per-test timeouts (5s in Jest and Vitest) and a paused install its downloads; and
+    //    pausing an idle job (a watcher between rebuilds) stops nothing from growing.
     let since_act = now.saturating_sub(sys.last_pressure_act);
     if sys.level >= 4 && since_act >= PRESSURE_STEP_S {
         let victim = order.iter().rev().copied().find(|&i| {
             let j = &jobs[i];
-            j.state == State::Running && j.pausable && matches!(j.kind, Kind::Build | Kind::Test)
+            j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build
         });
         if let Some(i) = victim {
             set(&mut jobs[i], State::PressurePaused);
@@ -172,15 +176,13 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         }
     }
 
-    // 5. all cores busy → background heavy jobs yield (reversible on macOS). Never terminal jobs:
-    //    someone is watching those.
+    // 5. all cores busy → background heavy jobs yield: nice 10, kept until the job ends (an ordinary
+    //    user can't raise priority back). Never terminal jobs: someone is watching those.
     for &i in &order {
         let j = &mut jobs[i];
-        let want = sys.cpu_busy && j.kind.heavy() && !j.terminal && j.state == State::Running;
-        let forced_start = j.bg && !sys.cpu_busy && now.saturating_sub(j.state_since) < 30;
-        if want != j.bg && !forced_start {
-            j.bg = want;
-            out.push(Action::Bg(i, want));
+        if sys.cpu_busy && !j.bg && j.kind.heavy() && !j.terminal && j.state == State::Running {
+            j.bg = true;
+            out.push(Action::Bg(i, true));
         }
     }
     out
@@ -209,7 +211,7 @@ mod tests {
 
     #[test]
     fn admission_queues_beyond_cap_then_fifo() {
-        let mut jobs = vec![job(Kind::Build, 1), job(Kind::Install, 1), job(Kind::Test, 0)];
+        let mut jobs = vec![job(Kind::Build, 1), job(Kind::Install, 1), job(Kind::Build, 0)];
         let mut s = sys(100, 1, 2);
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(2)]);
         assert_eq!(jobs[2].state, State::Queued);
@@ -217,6 +219,17 @@ mod tests {
         s.now = 105;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1)]);
         assert!(jobs[1].admitted);
+    }
+
+    #[test]
+    fn test_runs_never_wait_but_take_a_slot() {
+        let mut jobs = vec![job(Kind::Build, 5), job(Kind::Test, 0)];
+        let mut s = sys(100, 1, 1);
+        assert!(decide(&mut jobs, &mut s).is_empty(), "a paused test run would fail its timeouts");
+        assert!(jobs[1].admitted && jobs[1].state == State::Running);
+        jobs.push(job(Kind::Install, 0)); // slots are full (build + test): the install waits
+        s.now = 101;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(2)]);
     }
 
     #[test]
@@ -249,17 +262,20 @@ mod tests {
     }
 
     #[test]
-    fn critical_pauses_newest_build_never_install_and_resumes_when_calm() {
-        let mut jobs = vec![job(Kind::Build, 50), job(Kind::Test, 40), job(Kind::Install, 30)];
+    fn critical_pauses_newest_busy_build_only_and_resumes_when_calm() {
+        let mut idle_watcher = job(Kind::Build, 20); // e.g. `webpack --watch` between rebuilds
+        idle_watcher.active = false;
+        let mut jobs =
+            vec![job(Kind::Build, 60), job(Kind::Build, 50), job(Kind::Test, 40), job(Kind::Install, 30), idle_watcher];
         jobs.iter_mut().for_each(|j| j.admitted = true);
         let mut s = sys(100, 4, 3);
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(1)]);
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(1)], "newest busy build first");
         s.now = 102; // too soon for another step
         assert!(decide(&mut jobs, &mut s).is_empty());
         s.now = 106;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
         s.now = 112;
-        assert!(decide(&mut jobs, &mut s).is_empty(), "an install must never be paused for memory");
+        assert!(decide(&mut jobs, &mut s).is_empty(), "tests, installs and idle jobs are never paused for memory");
         s.level = 2; // pressure eases: resume the longest-paused first, after a calm period
         s.level_since = 112;
         s.now = 120;
@@ -294,8 +310,9 @@ mod tests {
         let mut s = sys(100, 1, 3);
         s.cpu_busy = true;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Bg(0, true)]);
+        assert!(decide(&mut jobs, &mut s).is_empty(), "lowered once");
         s.cpu_busy = false;
         s.now = 200;
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Bg(0, false)]);
+        assert!(decide(&mut jobs, &mut s).is_empty(), "stays lowered: it can't be raised without root");
     }
 }

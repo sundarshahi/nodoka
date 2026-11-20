@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>loadline — one page</title>
+<html lang="en"><head><meta charset="utf-8"><title>nodoka — one page</title>
 <style>
   :root { --ink:#1f2328; --mute:#59636e; --line:#e3e6ea; --bg:#f6f7f9; --ok:#1a7f37; --accent:#3b5bdb; }
   * { box-sizing: border-box; }
@@ -7,6 +7,7 @@
   main { max-width: 1060px; margin: 32px auto; padding: 0 24px; }
   h1 { font-size: 28px; margin: 0 0 4px; } h2 { font-size: 13px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); margin: 32px 0 12px; }
   .lead { color: var(--mute); font-size: 17px; margin: 0; }
+  .meaning { color: var(--mute); font-size: 16px; font-weight: 400; }
   .grid { display:grid; gap:16px; } .g3 { grid-template-columns: repeat(3,1fr); } .g2 { grid-template-columns: 1fr 1fr; } .g4 { grid-template-columns: repeat(4,1fr); }
   .card { background:#fff; border-radius:8px; padding:16px 18px; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
   .card h3 { margin:0 0 6px; font-size:16px; } .card p { margin:0; color:var(--mute); }
@@ -18,30 +19,32 @@
   .call { border: 1px solid var(--accent); }
 </style></head>
 <body><main>
-  <h1>loadline</h1>
+  <h1>nodoka <small class="meaning">のどか · calm, peaceful weather</small></h1>
   <p class="lead">Your computer stays responsive while dev servers, builds, installs and coding agents run. Any stack, macOS and Linux, no new commands, nothing turned off.</p>
 
   <h2>How it works</h2>
   <div class="flow">
     <div class="card"><h3>You or an agent run</h3><p><code>npm ci</code>, <code>bin/rails server</code>, <code>cargo build</code>, <code>pytest</code>, <code>go run</code>… exactly as today.</p></div>
     <div class="arrow">→</div>
-    <div class="card"><h3>1 · Fewer workers</h3><p>Each tool is told about half your cores: Node preload plus caps for Cargo, Go, Turbopack, Python, pytest, Bundler, Rails, .NET.</p></div>
+    <div class="card"><h3>1 · Fewer workers, leaner memory</h3><p>Each tool is told about half your cores, and only 2 while memory is short. Node and Bun use their leaner memory settings.</p></div>
     <div class="arrow">→</div>
-    <div class="card"><h3>2 · Tiny helper</h3><p>A few heavy jobs at a time, the rest wait their turn. Idle servers sleep and wake on the next request. Pauses the newest build when memory is critical.</p></div>
+    <div class="card"><h3>2 · Tiny helper</h3><p>Builds take turns. Idle servers sleep and wake on the next request or saved file. Pauses the newest build when memory is critical. Never pauses a test run.</p></div>
   </div>
 
   <h2>Measured</h2>
   <div class="grid g4">
-    <div class="card"><div class="num">−30% <small>peak memory</small></div><p>real <code>next build</code>, 9 → 4 workers, same build time</p></div>
-    <div class="card"><div class="num">0.6–1.0 s <small>wake</small></div><p>Rails, Django, FastAPI, Go, Java, Next.js dev servers</p></div>
-    <div class="card"><div class="num">3 builds <small>1 slot</small></div><p><code>next build</code> + 2× <code>cargo build</code> ran in turn, all exit 0</p></div>
-    <div class="card"><div class="num">~3 MB <small>helper memory</small></div><p>473 KB program, 0.3% of one core, +0.7 ms per Node start</p></div>
+    <div class="card"><div class="num">−62% <small>one build</small></div><p>real <code>next build</code> while memory is short (2 workers); −30% normally, same build time</p></div>
+    <div class="card"><div class="num">−75% <small>3 agents at once</small></div><p>three <code>next build</code>s, one at a time: 0.9 GB instead of 3.5–3.8 GB, all exit 0</p></div>
+    <div class="card"><div class="num">0.5–0.8 s <small>wake</small></div><p>on a request or a saved file: React, Vue, Angular, Next.js, Rails, Django</p></div>
+    <div class="card"><div class="num">~3 MB <small>helper memory</small></div><p>474 KB program, under 1% of one core, +1 ms per Node start</p></div>
   </div>
 
   <h2>Works with</h2>
   <table>
     <tr><th>Stack</th><th>Examples</th><th>Tested for real</th></tr>
-    <tr><td>JavaScript / TypeScript</td><td><code>npm/pnpm/yarn/bun install</code>, <code>next</code>, <code>vite</code>, <code>nuxt</code>, <code>astro</code>, <code>webpack</code>, <code>tsc</code>, <code>jest</code>, <code>vitest</code>, <code>turbo</code>, <code>nx</code></td><td class="ok">✓ next build, next dev</td></tr>
+    <tr><td>React</td><td>Vite, Next.js, React Router / Remix, Create React App, webpack, Gatsby, Expo / React Native, Storybook</td><td class="ok">✓ Vite 8 + React 19 (hot reload), Next.js 16, React Router 8, webpack 5</td></tr>
+    <tr><td>Vue · Angular · Svelte · more</td><td>Vite, Nuxt, Vue CLI · <code>ng serve/build/test</code> · SvelteKit, Astro, Solid, Qwik, Ember, Electron, Tauri</td><td class="ok">✓ Vue 3, Angular 21</td></tr>
+    <tr><td>JavaScript tools</td><td><code>npm/pnpm/yarn/bun install</code>, <code>tsc</code>, <code>eslint</code>, <code>jest</code>, <code>vitest</code>, <code>turbo</code>, <code>nx</code>, <code>esbuild</code>, <code>rspack</code></td><td class="ok">✓ next build, Vitest</td></tr>
     <tr><td>Ruby</td><td><code>rails server/test</code>, <code>puma</code>, <code>bin/dev</code>, <code>bundle install</code>, <code>rspec</code></td><td class="ok">✓ Rails 8.1 + Puma 8</td></tr>
     <tr><td>Python</td><td><code>manage.py runserver</code>, <code>flask run</code>, <code>uvicorn</code>, <code>gunicorn</code>, <code>pytest</code>, <code>pip/uv/poetry</code></td><td class="ok">✓ Django 6.1, FastAPI, http.server</td></tr>
     <tr><td>Go · Rust</td><td><code>go run/build/test</code>, <code>air</code>, <code>hugo</code> · <code>cargo build/test/run/watch</code>, <code>trunk</code></td><td class="ok">✓ go run, cargo build</td></tr>
@@ -51,13 +54,13 @@
   <h2>Safety</h2>
   <div class="grid g3">
     <div class="card"><h3>Never kills</h3><p>Only pauses, resumes and lowers priority. Your processes only, no root, no network.</p></div>
-    <div class="card"><h3>Never breaks your terminal</h3><p>Never pauses what a shell waits on; prints one line when a job has to wait.</p></div>
-    <div class="card"><h3>Crash-safe and reversible</h3><p>Writes down what it pauses first; <code>loadline off</code> resumes all; <code>uninstall</code> removes every line it added.</p></div>
+    <div class="card"><h3>Never breaks your work</h3><p>Never pauses what a shell waits on, or a test run (it would fail its timeouts). Hot reload keeps working. One line in the terminal when a job has to wait.</p></div>
+    <div class="card"><h3>Crash-safe and reversible</h3><p>Writes down what it pauses first; <code>nodoka off</code> resumes all; <code>uninstall</code> removes every line it added.</p></div>
   </div>
 
   <h2>Your call</h2>
   <div class="grid g2">
-    <div class="card call"><h3>1 · Publish?</h3><p>Ready to push as <code>sundarshahi/loadline</code> (public). CI runs on Linux x86/arm and macOS; tagging <code>v0.1.0</code> publishes binaries.</p></div>
-    <div class="card call"><h3>2 · Switch it on for this Mac?</h3><p><code>cargo run --release -- install</code> from the repo. <code>loadline uninstall</code> removes everything.</p></div>
+    <div class="card call"><h3>1 · Publish?</h3><p>Ready to push as <code>sundarshahi/nodoka</code> (public). CI runs on Linux x86/arm and macOS; tagging <code>v0.1.0</code> publishes binaries.</p></div>
+    <div class="card call"><h3>2 · Switch it on for this Mac?</h3><p><code>cargo install --path .</code> then <code>nodoka install</code>. <code>nodoka uninstall</code> removes everything.</p></div>
   </div>
 </main></body></html>

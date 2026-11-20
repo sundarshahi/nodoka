@@ -30,8 +30,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo test --all-targets --locked
-      - name: Node preload lowers the reported core count
-        shell: bash
-        run: |
-          got=$(LOADLINE_CPUS=1 NODE_OPTIONS="--require=$PWD/preload/preload.cjs" node -p 'require("os").availableParallelism()')
-          test "$got" = 1 || { echo "expected 1, got $got"; exit 1; }
+      - name: Node preload (worker cap, memory pressure, off switch)
+        run: node preload/test.cjs

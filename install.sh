@@ -1,30 +1,30 @@
 #!/bin/sh
-# Installs loadline: downloads the release for this machine, checks its SHA-256, and sets it up.
-#   curl -fsSL https://raw.githubusercontent.com/sundarshahi/loadline/main/install.sh | sh
-# Pick a version with LOADLINE_VERSION=v0.1.0.
+# Installs nodoka: downloads the release for this machine, checks its SHA-256, and sets it up.
+#   curl -fsSL https://raw.githubusercontent.com/sundarshahi/nodoka/main/install.sh | sh
+# Pick a version with NODOKA_VERSION=v0.1.0.
 set -eu
 
-repo="${LOADLINE_REPO:-sundarshahi/loadline}"
-version="${LOADLINE_VERSION:-latest}"
+repo="${NODOKA_REPO:-sundarshahi/nodoka}"
+version="${NODOKA_VERSION:-latest}"
 
 case "$(uname -s)" in
   Darwin) os=apple-darwin ;;
   Linux) os=unknown-linux-musl ;;
-  *) echo "loadline runs on macOS and Linux (WSL 2 works). Windows support is planned." >&2; exit 1 ;;
+  *) echo "nodoka runs on macOS and Linux (WSL 2 works). Windows support is planned." >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
   arm64 | aarch64) arch=aarch64 ;;
-  *) echo "loadline has no release for this CPU ($(uname -m)). Build it with: cargo install --git https://github.com/$repo" >&2; exit 1 ;;
+  *) echo "nodoka has no release for this CPU ($(uname -m)). Build it with: cargo install --git https://github.com/$repo" >&2; exit 1 ;;
 esac
 
-file="loadline-$arch-$os.tar.gz"
+file="nodoka-$arch-$os.tar.gz"
 if [ "$version" = latest ]; then
   base="https://github.com/$repo/releases/latest/download"
 else
   base="https://github.com/$repo/releases/download/$version"
 fi
-base="${LOADLINE_BASE_URL:-$base}" # a mirror, or a local folder for testing
+base="${NODOKA_BASE_URL:-$base}" # a mirror, or a local folder for testing
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -39,4 +39,4 @@ else
 fi || { echo "The download's checksum doesn't match. Nothing was installed." >&2; exit 1; }
 
 tar -xzf "$tmp/$file" -C "$tmp"
-"$tmp/loadline" install
+"$tmp/nodoka" install

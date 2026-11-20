@@ -1,5 +1,5 @@
 name: Bug report
-description: loadline did something it shouldn't, or didn't do something it should.
+description: nodoka did something it shouldn't, or didn't do something it should.
 labels: [bug]
 body:
   - type: textarea
@@ -11,22 +11,22 @@ body:
   - type: textarea
     id: status
     attributes:
-      label: Output of `loadline status` at the time (if you can)
+      label: Output of `nodoka status` at the time (if you can)
       render: text
   - type: textarea
     id: explain
     attributes:
-      label: Output of `loadline explain <pid>` for the process involved
+      label: Output of `nodoka explain <pid>` for the process involved
       render: text
   - type: textarea
     id: log
     attributes:
-      label: Relevant lines from ~/.loadline/log
+      label: Relevant lines from ~/.nodoka/log
       render: text
   - type: input
     id: version
     attributes:
-      label: loadline version and OS
-      placeholder: "loadline 0.1.0, macOS 15.2 (Apple silicon)"
+      label: nodoka version and OS
+      placeholder: "nodoka 0.1.0, macOS 15.2 (Apple silicon)"
     validations:
       required: true

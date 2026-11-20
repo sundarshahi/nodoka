@@ -1,4 +1,4 @@
-//! End-to-end: a real daemon governing real processes. Each test uses its own LOADLINE_HOME and
+//! End-to-end: a real daemon governing real processes. Each test uses its own NODOKA_HOME and
 //! `--test <scope>`, so it only touches the fake jobs it starts — safe to run on a dev machine.
 
 use std::fs;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const BIN: &str = env!("CARGO_BIN_EXE_loadline");
+const BIN: &str = env!("CARGO_BIN_EXE_nodoka");
 
 struct Daemon {
     home: PathBuf,
@@ -19,7 +19,7 @@ struct Daemon {
 
 impl Daemon {
     fn start(scope: &str, config: &str) -> Daemon {
-        let home = std::env::temp_dir().join(format!("loadline-it-{scope}-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("nodoka-it-{scope}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
         fs::write(home.join("config"), config).unwrap();
@@ -29,8 +29,12 @@ impl Daemon {
 
     /// Start a fake tool: `argv` is what the daemon sees, `mode` what it does.
     fn job(&self, argv: &[&str], mode: &str) -> Child {
+        self.job_in(&std::env::temp_dir(), argv, mode)
+    }
+
+    fn job_in(&self, dir: &Path, argv: &[&str], mode: &str) -> Child {
         let mut c = Command::new(fakejob());
-        c.arg0(argv[0]).args(&argv[1..]).env("LOADLINE_TEST", &self.scope).env("FAKEJOB", mode);
+        c.current_dir(dir).arg0(argv[0]).args(&argv[1..]).env("NODOKA_TEST", &self.scope).env("FAKEJOB", mode);
         c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         unsafe {
             c.pre_exec(|| {
@@ -44,12 +48,12 @@ impl Daemon {
     fn cli(&self, args: &[&str]) {
         let ok = Command::new(BIN)
             .args(args)
-            .env("LOADLINE_HOME", &self.home)
+            .env("NODOKA_HOME", &self.home)
             .stdout(Stdio::null())
             .status()
             .unwrap()
             .success();
-        assert!(ok, "loadline {args:?} failed");
+        assert!(ok, "nodoka {args:?} failed");
     }
 
     fn status(&self) -> String {
@@ -92,7 +96,7 @@ fn fakejob() -> PathBuf {
 fn spawn_daemon(home: &Path, scope: &str) -> Child {
     Command::new(BIN)
         .args(["daemon", "--test", scope])
-        .env("LOADLINE_HOME", home)
+        .env("NODOKA_HOME", home)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -209,6 +213,27 @@ fn idle_server_sleeps_and_the_next_request_wakes_it() {
 }
 
 #[test]
+fn saving_a_project_file_wakes_a_sleeping_server_but_dependency_changes_dont() {
+    let d = Daemon::start("edit", "idle_sleep_seconds = 2\n");
+    let project = d.home.join("app");
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("node_modules/react")).unwrap();
+    let port = free_port();
+    let argv = ["node", "/app/node_modules/vite/bin/vite.js", "--port", &port.to_string()];
+    let s = Job(d.job_in(&project, &argv, &format!("serve:{port}")));
+    let pid = s.0.id() as i32;
+    assert!(eventually(15, || stopped(pid)), "idle server never went to sleep:\n{}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    fs::write(project.join("node_modules/react/index.js"), "x").unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!d.log().contains("resume"), "a change inside node_modules woke the server:\n{}", d.log());
+    let saved = Instant::now();
+    fs::write(project.join("src/App.tsx"), "export default 1").unwrap();
+    assert!(eventually(5, || !stopped(pid)), "saving a source file did not wake the server:\n{}", d.log());
+    assert!(saved.elapsed() < Duration::from_secs(3), "wake took {:?}", saved.elapsed());
+}
+
+#[test]
 fn a_watcher_without_a_port_never_sleeps() {
     let d = Daemon::start("watcher", "idle_sleep_seconds = 1\n");
     let w = Job(d.job(&["node", "/app/node_modules/typescript/bin/tsc", "--watch"], "idle"));
@@ -223,7 +248,7 @@ fn a_crashed_daemon_resumes_what_it_paused_on_restart() {
     let mut d = Daemon::start("crash", "heavy_jobs = 1\nmax_wait_seconds = 300\n");
     let a = Job(d.job(NEXT_BUILD, "burn"));
     assert!(eventually(10, || d.status().contains(&a.0.id().to_string())));
-    let b = Job(d.job(&["go", "test", "./..."], "burn"));
+    let b = Job(d.job(&["go", "build", "./..."], "burn"));
     let b_pid = b.0.id() as i32;
     assert!(eventually(10, || stopped(b_pid)));
     unsafe { libc::kill(d.child.id() as i32, libc::SIGKILL) };
@@ -239,7 +264,7 @@ fn a_crashed_daemon_resumes_what_it_paused_on_restart() {
 }
 
 #[test]
-fn turning_loadline_off_resumes_everything() {
+fn turning_nodoka_off_resumes_everything() {
     let d = Daemon::start("off", "heavy_jobs = 1\nmax_wait_seconds = 300\n");
     let a = Job(d.job(NEXT_BUILD, "burn"));
     assert!(eventually(10, || d.status().contains(&a.0.id().to_string())));

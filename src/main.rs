@@ -9,18 +9,18 @@ use std::fs;
 use std::time::Duration;
 
 const HELP: &str = "\
-loadline keeps your computer responsive while dev servers, builds, installs and coding
+nodoka keeps your computer responsive while dev servers, builds, installs and coding
 agents run. It works in the background: you keep using the same commands.
 
 Usage:
-  loadline status            what is running, waiting or asleep, and why
-  loadline explain <cmd…>    how loadline treats a command (or a running pid)
-  loadline off | on          pause loadline (everything it paused resumes) / turn it back on
-  loadline install           set up for every terminal, editor and agent on this machine
-  loadline uninstall         remove everything loadline added
-  loadline daemon            run the background helper in the foreground (for debugging)
+  nodoka status            what is running, waiting or asleep, and why
+  nodoka explain <cmd…>    how nodoka treats a command (or a running pid)
+  nodoka off | on          pause nodoka (everything it paused resumes) / turn it back on
+  nodoka install           set up for every terminal, editor and agent on this machine
+  nodoka uninstall         remove everything nodoka added
+  nodoka daemon            run the background helper in the foreground (for debugging)
 
-Settings: ~/.loadline/config    Log: ~/.loadline/log
+Settings: ~/.nodoka/config    Log: ~/.nodoka/log
 ";
 
 fn main() {
@@ -37,24 +37,24 @@ fn main() {
             fs::create_dir_all(&dir).ok();
             fs::write(dir.join("off"), "").expect("write the off switch");
             println!(
-                "loadline is off: everything it paused continues, and new shells skip its limits.\nRun `loadline on` to turn it back on."
+                "nodoka is off: everything it paused continues, and new shells skip its limits.\nRun `nodoka on` to turn it back on."
             );
         }
         Some("on") => {
             fs::remove_file(dir.join("off")).ok();
-            println!("loadline is on.");
+            println!("nodoka is on.");
         }
         Some("install") => {
             if let Err(e) = setup::install(&config::load(&dir.join("config"))) {
-                eprintln!("loadline install failed: {e}");
+                eprintln!("nodoka install failed: {e}");
                 std::process::exit(1);
             }
         }
         Some("uninstall") => setup::uninstall(),
-        Some("--version" | "-V" | "version") => println!("loadline {}", env!("CARGO_PKG_VERSION")),
+        Some("--version" | "-V" | "version") => println!("nodoka {}", env!("CARGO_PKG_VERSION")),
         Some("help" | "--help" | "-h") | None => print!("{HELP}"),
         Some(other) => {
-            eprintln!("loadline: unknown command `{other}`\n\n{HELP}");
+            eprintln!("nodoka: unknown command `{other}`\n\n{HELP}");
             std::process::exit(2);
         }
     }
@@ -63,7 +63,7 @@ fn main() {
 fn status() {
     let dir = config::dir();
     if dir.join("off").exists() {
-        println!("loadline is off. Run `loadline on` to turn it back on.");
+        println!("nodoka is off. Run `nodoka on` to turn it back on.");
         return;
     }
     let p = dir.join("status");
@@ -74,9 +74,9 @@ fn status() {
         .is_some_and(|e| e < Duration::from_secs(15));
     if !fresh {
         if setup::service_running() {
-            println!("loadline is starting…");
+            println!("nodoka is starting…");
         } else {
-            println!("loadline's background helper is not running. Run `loadline install` to set it up.");
+            println!("nodoka's background helper is not running. Run `nodoka install` to set it up.");
         }
         return;
     }
@@ -94,7 +94,7 @@ fn explain(args: &[String]) {
             }
         },
         [] => {
-            eprintln!("usage: loadline explain <command…> | <pid>");
+            eprintln!("usage: nodoka explain <command…> | <pid>");
             std::process::exit(2);
         }
         _ => args.to_vec(),
@@ -107,12 +107,12 @@ fn explain(args: &[String]) {
             "a build. A few run at once; extras wait their turn. Paused if memory gets critically low, resumed when it recovers."
         }
         Some(classify::Kind::Test) => {
-            "a test run. A few run at once; extras wait their turn. Paused if memory gets critically low, resumed when it recovers."
+            "a test run. It starts right away and is never paused (a paused test fails its timeouts); builds and installs wait for it when the slots are full."
         }
         Some(classify::Kind::Dev) => {
-            "a dev server or watcher. Never queued. If it listens on a port and sits idle, it sleeps; the next request wakes it."
+            "a dev server or watcher. Never queued. If it listens on a port and sits idle, it sleeps; the next request or a saved file in its project wakes it."
         }
-        None => "not dev work loadline knows. It is left alone. (Teach it in ~/.loadline/config, or open an issue.)",
+        None => "not dev work nodoka knows. It is left alone. (Teach it in ~/.nodoka/config, or open an issue.)",
     };
     println!("`{}` is {what}", daemon::label(&argv));
 }
