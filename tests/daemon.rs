@@ -258,11 +258,12 @@ fn test_helpers_stop_when_the_test_run_that_started_them_dies() {
     pids.extend(children(pids[1])); // the busy child too, so even a failing run leaves nothing behind
     let gone = |p: i32| unsafe { libc::kill(p, 0) } != 0;
     let ok = eventually(5, || pids.iter().all(|&p| gone(p)));
+    let alive: Vec<i32> = pids.iter().copied().filter(|&p| !gone(p)).collect();
     pids.iter().for_each(|&p| unsafe {
         libc::kill(p, libc::SIGKILL);
     });
     let _ = fs::remove_dir_all(&home);
-    assert!(ok, "a test helper outlived the test run that started it");
+    assert!(ok, "test helpers outlived the test run that started them: {alive:?} of [daemon, job, children] {pids:?}");
 }
 
 #[test]
@@ -283,7 +284,8 @@ fn extra_builds_wait_their_turn_then_run() {
     assert!(d.status().contains("waiting for a slot"), "{}", d.status());
     drop(a); // first build finishes → the queued one starts
     assert!(eventually(10, || !stopped(b_pid)), "queued build never started:\n{}", d.log());
-    assert!(children(b_pid).iter().all(|&c| !stopped(c)));
+    // the build and its worker are resumed one after the other: give the worker its moment
+    assert!(eventually(5, || children(b_pid).iter().all(|&c| !stopped(c))), "the worker stayed paused");
 }
 
 #[test]

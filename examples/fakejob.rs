@@ -18,7 +18,8 @@ fn main() {
         let start = std::time::Instant::now();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            if (!leftover && std::os::unix::process::parent_id() != parent) || start.elapsed().as_secs() >= 60 {
+            let orphaned = std::os::unix::process::parent_id() != parent || parent == 1;
+            if (!leftover && orphaned) || start.elapsed().as_secs() >= 60 {
                 std::process::exit(0);
             }
         }

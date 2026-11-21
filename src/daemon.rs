@@ -61,6 +61,10 @@ extern "C" fn on_signal(_: libc::c_int) {
 }
 
 pub fn run(opts: Options) {
+    // first thing: a test helper whose test run was killed stops too (and resumes what it paused)
+    // instead of running forever. Parent 1 means it was orphaned before this line ran.
+    let parent = std::os::unix::process::parent_id();
+    let orphaned = || opts.scope.is_some() && (std::os::unix::process::parent_id() != parent || parent == 1);
     unsafe {
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
@@ -111,9 +115,6 @@ pub fn run(opts: Options) {
     let mut last_status = String::new();
     let mut tick = 0u64;
     let (mut duty, mut last_tick) = (1.0f64, Instant::now());
-    // a test helper whose test run was killed stops too (and resumes what it paused) instead of running forever
-    let parent = std::os::unix::process::parent_id();
-    let orphaned = || opts.scope.is_some() && std::os::unix::process::parent_id() != parent;
 
     while !STOP.load(Ordering::SeqCst) && !orphaned() {
         tick += 1;
