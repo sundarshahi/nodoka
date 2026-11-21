@@ -5,6 +5,19 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Leftover guard: a process whose parent is gone that keeps a core busy for 10 minutes gets lower
+  priority and is listed in `nodoka status` with the command that stops it
+  (`leftover_busy_minutes`, 0 turns it off).
+
+### Fixed
+
+- Running `nodoka install` again on macOS (to upgrade) no longer leaves the helper off: starting the
+  new one is retried until the old one has finished resuming what it paused.
+- Test helpers never outlive their test run: the fake jobs and `nodoka daemon --test` exit once the
+  process that started them is gone. A busy child of a killed fake job had kept two cores busy for 36 hours.
+
 ## [0.1.0] - 2026-11-20
 
 First release, for macOS and Linux (including WSL 2).

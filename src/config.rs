@@ -13,6 +13,8 @@ pub struct Config {
     pub idle_sleep_s: u64,
     /// A queued job never waits longer than this.
     pub max_wait_s: u64,
+    /// A process left with no parent that keeps a core busy this long gets lower priority; 0 turns it off.
+    pub leftover_busy_s: u64,
     pub custom: Custom,
     pub warnings: Vec<String>,
 }
@@ -32,6 +34,10 @@ pub const TEMPLATE: &str = "\
 
 # A job waiting for a free slot starts anyway after this many seconds.
 # max_wait_seconds = 60
+
+# A process left behind by a tool or agent (its parent is gone) that keeps a core busy this many
+# minutes gets lower priority and is listed in `nodoka status`. 0 turns it off.
+# leftover_busy_minutes = 10
 
 # Teach nodoka about your own tools (program names, comma-separated):
 # dev = my-server, my-watcher
@@ -60,6 +66,7 @@ pub fn load(path: &Path) -> Config {
         cpus: default_cpus(),
         idle_sleep_s: 600,
         max_wait_s: 60,
+        leftover_busy_s: 600,
         custom: Custom::new(),
         warnings: vec![],
     };
@@ -81,6 +88,8 @@ pub fn load(path: &Path) -> Config {
             ("idle_sleep_minutes", Ok(v)) => c.idle_sleep_s = v * 60,
             ("idle_sleep_seconds", Ok(v)) => c.idle_sleep_s = *v,
             ("max_wait_seconds", Ok(v)) => c.max_wait_s = *v,
+            ("leftover_busy_minutes", Ok(v)) => c.leftover_busy_s = v * 60,
+            ("leftover_busy_seconds", Ok(v)) => c.leftover_busy_s = *v,
             ("dev" | "build" | "test" | "install" | "ignore", _) => {
                 for tool in value.split(',').map(|t| t.trim().to_ascii_lowercase()).filter(|t| !t.is_empty()) {
                     c.custom.insert(tool, Kind::parse(key));
@@ -89,7 +98,13 @@ pub fn load(path: &Path) -> Config {
             (_, Err(_))
                 if matches!(
                     key,
-                    "heavy_jobs" | "cpus" | "idle_sleep_minutes" | "idle_sleep_seconds" | "max_wait_seconds"
+                    "heavy_jobs"
+                        | "cpus"
+                        | "idle_sleep_minutes"
+                        | "idle_sleep_seconds"
+                        | "max_wait_seconds"
+                        | "leftover_busy_minutes"
+                        | "leftover_busy_seconds"
                 ) =>
             {
                 c.warnings.push(format!("config line {}: `{key}` needs a whole number", n + 1));

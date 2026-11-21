@@ -171,6 +171,79 @@ fn free_port() -> u16 {
 const NEXT_BUILD: &[&str] = &["node", "/app/node_modules/next/dist/bin/next", "build"];
 
 #[test]
+fn a_fake_jobs_busy_child_stops_when_the_job_is_killed() {
+    // A leftover busy child once spun two cores for 36 hours after its job was killed.
+    let mut job = Command::new(fakejob()).env("FAKEJOB", "burn").stdout(Stdio::null()).spawn().unwrap();
+    let pid = job.id() as i32;
+    let mut kids = Vec::new();
+    assert!(
+        eventually(5, || {
+            kids = children(pid);
+            !kids.is_empty()
+        }),
+        "no busy child started"
+    );
+    job.kill().unwrap();
+    job.wait().unwrap();
+    let gone = |c: i32| unsafe { libc::kill(c, 0) } != 0;
+    let ok = eventually(5, || kids.iter().all(|&c| gone(c)));
+    kids.iter().for_each(|&c| unsafe {
+        libc::kill(c, libc::SIGKILL);
+    });
+    assert!(ok, "the busy child outlived its job");
+}
+
+#[test]
+fn a_busy_process_left_without_a_parent_gets_lower_priority() {
+    let d = Daemon::start("leftover", "leftover_busy_seconds = 3\n");
+    // `sh` exits right away, leaving the busy job with no parent (it gives up on its own after 60s)
+    let out = Command::new("sh")
+        .args(["-c", r#""$1" >/dev/null 2>&1 & echo $!"#, "sh", fakejob().to_str().unwrap()])
+        .env("NODOKA_TEST", "leftover")
+        .env("FAKEJOB", "leftover")
+        .output()
+        .unwrap();
+    let orphan: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+    let parented = Job(d.job(&["node", "worker.js"], "burn")); // just as busy, but its parent is alive
+    let nice = |p: i32| unsafe { libc::getpriority(libc::PRIO_PROCESS as _, p as libc::id_t) };
+    // judged by the log: a real nodoka on this machine may have lowered this test run's priority already
+    let flagged = eventually(25, || d.log().contains(&format!("leftover pid {orphan} ")));
+    let (log, status, orphan_nice) = (d.log(), d.status(), nice(orphan));
+    unsafe { libc::kill(orphan, libc::SIGKILL) };
+    assert!(flagged, "the leftover wasn't noticed; log:\n{log}");
+    assert_eq!(orphan_nice, 10, "the leftover kept its priority");
+    assert!(status.contains(&format!("{orphan}  leftover busy")), "{status}");
+    assert!(!log.contains(&format!("pid {} ", parented.0.id())), "a busy process whose parent is alive was touched");
+}
+
+#[test]
+fn test_helpers_stop_when_the_test_run_that_started_them_dies() {
+    // `sh` stands in for a killed `cargo test`: it starts a test daemon and a busy job, then exits.
+    let home = std::env::temp_dir().join(format!("nodoka-orphan-{}", std::process::id()));
+    let out = Command::new("sh")
+        .args([
+            "-c",
+            r#""$1" daemon --test orphan >/dev/null 2>&1 & echo $!; FAKEJOB=burn "$2" >/dev/null 2>&1 & echo $!; sleep 1"#,
+            "sh",
+        ])
+        .args([BIN, fakejob().to_str().unwrap()])
+        .env("NODOKA_HOME", &home)
+        .output()
+        .unwrap();
+    let mut pids: Vec<i32> =
+        String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect();
+    assert_eq!(pids.len(), 2, "could not start the helpers");
+    pids.extend(children(pids[1])); // the busy child too, so even a failing run leaves nothing behind
+    let gone = |p: i32| unsafe { libc::kill(p, 0) } != 0;
+    let ok = eventually(5, || pids.iter().all(|&p| gone(p)));
+    pids.iter().for_each(|&p| unsafe {
+        libc::kill(p, libc::SIGKILL);
+    });
+    let _ = fs::remove_dir_all(&home);
+    assert!(ok, "a test helper outlived the test run that started it");
+}
+
+#[test]
 fn extra_builds_wait_their_turn_then_run() {
     let d = Daemon::start("queue", "heavy_jobs = 1\nmax_wait_seconds = 300\n");
     let a = Job(d.job(NEXT_BUILD, "burn"));

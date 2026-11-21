@@ -173,6 +173,13 @@ Router, webpack, Angular, Next.js, Rails and Django woke 0.59–0.84 s after a s
   macOS's background priority (`PRIO_DARWIN_BG`) was used first because it can be undone, but it confines
   work to the efficiency cores: three `next build`s run at once took 40–42 s under it, against 8–9 s at
   normal priority and 7 s at nice 10.
+- **Leftovers.** A process whose parent died is handed to launchd (macOS) or init or the user's
+  `systemd` (Linux). One that keeps at least a quarter of a core busy for `leftover_busy_minutes` (10)
+  gets nice 10 once, a log line and a line in `nodoka status` with `kill <pid>`. Apps, app extensions
+  and system services (`/System`, `/usr/libexec`, `/usr/sbin`, `/Library`, anything inside an `.app`)
+  run parentless by design and are skipped. Found the hard way: two busy children of a killed test job
+  ran at full speed for 36 hours. Lowering priority keeps the machine responsive but doesn't stop the
+  heat, so stopping it is left to you; nodoka never kills.
 - **Crash safety.** Before any signal, the processes about to be paused or lowered are written to
   `~/.nodoka/paused`. On start, stop, `nodoka off` and `nodoka uninstall`, everything in that file
   is resumed. Processes are identified by pid *and* start time, so a reused pid is never touched.

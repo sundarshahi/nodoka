@@ -279,10 +279,17 @@ fn start_service(bin: &Path) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let target = format!("gui/{}", crate::sys::uid());
     Command::new("launchctl").args(["bootout", &format!("{target}/{SERVICE}")]).output().ok();
-    let ok = Command::new("launchctl")
-        .args(["bootstrap", &target, &plist.display().to_string()])
-        .output()
-        .is_ok_and(|o| o.status.success());
+    // bootout returns before the old helper has exited (it resumes what it paused first); until then
+    // bootstrap is refused, so a reinstall or upgrade would leave nodoka off. Retry for up to 10s.
+    let ok = (0..40).any(|i| {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        Command::new("launchctl")
+            .args(["bootstrap", &target, &plist.display().to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    });
     if ok {
         println!("✓ background helper running; it starts again at login");
         Ok(())

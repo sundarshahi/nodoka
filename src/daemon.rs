@@ -79,6 +79,7 @@ pub fn run(opts: Options) {
     // tools rename themselves at startup (npm → `npm ci`, Next → `next-build (v16)`).
     let mut seen: HashMap<(i32, u64, String), (u64, Option<Seen>)> = HashMap::new();
     let mut tracked: HashMap<Key, Tracked> = HashMap::new();
+    let mut leftovers: HashMap<Key, Leftover> = HashMap::new();
     let mut st = Sys {
         now: sys::now(),
         level: sys::pressure(),
@@ -99,8 +100,11 @@ pub fn run(opts: Options) {
     ));
     let mut last_status = String::new();
     let mut tick = 0u64;
+    // a test helper whose test run was killed stops too (and resumes what it paused) instead of running forever
+    let parent = std::os::unix::process::parent_id();
+    let orphaned = || opts.scope.is_some() && std::os::unix::process::parent_id() != parent;
 
-    while !STOP.load(Ordering::SeqCst) {
+    while !STOP.load(Ordering::SeqCst) && !orphaned() {
         tick += 1;
         if tick % 5 == 0 && mtime(&cfg_path) != cfg_mtime {
             cfg = config::load(&cfg_path);
@@ -329,7 +333,44 @@ pub fn run(opts: Options) {
             }
         }
 
-        let status = render(&tracked, &st, cores);
+        // Leftovers: a process whose parent is gone (killed agent, interrupted test run) that keeps a
+        // core busy for long gets lower priority once and is listed, so it can't quietly heat the machine.
+        if cfg.leftover_busy_s > 0 && tick % 5 == 0 {
+            let in_jobs: HashSet<i32> = tracked.values().flat_map(|tr| pids(&tr.tree)).collect();
+            leftovers.retain(|k, _| alive.contains(k));
+            let orphan = |p: &Proc| p.ppid == 1 || by_pid.get(&p.ppid).is_some_and(|q| q.comm == "systemd");
+            for p in procs.iter().filter(|p| p.pid != me && !p.stopped && !in_jobs.contains(&p.pid) && orphan(p)) {
+                let Some((cpu, _)) = sys::cpu_mem(p.pid) else { continue };
+                let e = leftovers.entry((p.pid, p.id)).or_insert(Leftover { busy_since: t, cpu, at: t, label: None });
+                // under ~25% of one core since the last look (a runaway on a crowded machine still gets more): start counting again
+                if cpu.saturating_sub(e.cpu) < t.saturating_sub(e.at) * 250_000_000 || e.at == t {
+                    e.busy_since = t;
+                }
+                (e.cpu, e.at) = (cpu, t);
+                if e.label.is_none() && t.saturating_sub(e.busy_since) >= cfg.leftover_busy_s {
+                    let label = leftover_label(p.pid, opts.scope.as_deref()).unwrap_or_default();
+                    if !label.is_empty() {
+                        let mins = t.saturating_sub(e.busy_since).div_ceil(60);
+                        log(&format!(
+                            "lower priority  leftover pid {} — {label} (busy {mins} min with no parent; `kill {}` stops it)",
+                            p.pid, p.pid
+                        ));
+                        if !opts.dry_run {
+                            sys::set_bg(p.pid, true);
+                        }
+                    }
+                    e.label = Some(label);
+                }
+            }
+        }
+
+        let mut status = render(&tracked, &st, cores);
+        for ((pid, _), l) in &leftovers {
+            if let Some(label) = l.label.as_ref().filter(|l| !l.is_empty()) {
+                status +=
+                    &format!("{pid:>7}  leftover busy, no parent, low priority  {label}  (`kill {pid}` stops it)\n");
+            }
+        }
         write_status(&home, &mut last_status, &status);
         sleep_tick();
     }
@@ -340,6 +381,28 @@ pub fn run(opts: Options) {
 
 fn sleep_tick() {
     std::thread::sleep(Duration::from_secs(1));
+}
+
+struct Leftover {
+    busy_since: u64,
+    cpu: u64,
+    at: u64,
+    /// Set once judged: empty = not ours to touch (an app, a system service, outside the test scope).
+    label: Option<String>,
+}
+
+/// The label of a busy process with no parent, unless it's an app or system service (they run
+/// parentless by design) or outside the test scope.
+fn leftover_label(pid: i32, scope: Option<&str>) -> Option<String> {
+    let (argv, env) = sys::args_env(pid)?;
+    let var = |name: &str| env.iter().find_map(|e| e.strip_prefix(name)?.strip_prefix('='));
+    let exe = argv.first()?;
+    let system = ["/System/", "/usr/libexec/", "/usr/sbin/", "/Library/"].iter().any(|d| exe.starts_with(d))
+        || [".app/", ".appex/", ".framework/", ".xpc/"].iter().any(|b| exe.contains(b));
+    if system || var("NODOKA_SKIP") == Some("1") || (scope.is_some() && var("NODOKA_TEST") != scope) {
+        return None;
+    }
+    Some(label(&argv))
 }
 
 fn pids(keys: &[Key]) -> Vec<i32> {

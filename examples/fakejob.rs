@@ -1,7 +1,7 @@
 //! Test helper for tests/daemon.rs: pretends to be a dev tool. The tests start it with a fake
 //! command line (for example `node …/next/dist/bin/next build`) and choose what it does with
 //! FAKEJOB=burn (use CPU, with one busy child process), serve:<port> (answer TCP requests), or
-//! idle (do nothing).
+//! idle (do nothing), or leftover (use CPU after its parent is gone, for at most 60s).
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -10,8 +10,21 @@ use std::process::{Command, Stdio};
 #[allow(clippy::zombie_processes)] // the busy child lives as long as the job
 fn main() {
     let mode = std::env::var("FAKEJOB").unwrap_or_default();
-    if mode == "burn" {
-        if std::env::var_os("FAKEJOB_CHILD").is_none() {
+    // exit once orphaned (job killed, test run killed, manual run), so no mode ever outlives its test;
+    // `leftover` is orphaned on purpose and has a hard 60s limit instead
+    let parent = std::os::unix::process::parent_id();
+    let leftover = mode == "leftover";
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if (!leftover && std::os::unix::process::parent_id() != parent) || start.elapsed().as_secs() >= 60 {
+                std::process::exit(0);
+            }
+        }
+    });
+    if mode == "burn" || leftover {
+        if !leftover && std::env::var_os("FAKEJOB_CHILD").is_none() {
             let me = std::env::current_exe().unwrap();
             Command::new(me)
                 .arg0("node")

@@ -151,6 +151,7 @@ heavy_jobs = 3            # builds/tests/installs at once; test runs count but n
 cpus = 4                  # worker/thread count each tool is told about (default: half your cores, at least 2; 2 while memory is short)
 idle_sleep_minutes = 10   # 0 turns idle sleep off
 max_wait_seconds = 60     # a waiting job starts anyway after this long
+leftover_busy_minutes = 10  # a busy process left with no parent gets lower priority after this long; 0 turns it off
 
 # teach nodoka about your own tools (program names, comma-separated)
 dev = my-server
@@ -171,7 +172,10 @@ nodoka is designed to be safe to leave running:
 
 - **It never kills anything.** It only pauses (`SIGSTOP`), resumes (`SIGCONT`) and lowers priority.
 - **It only touches your own processes,** needs no root and makes no network connections.
-- **It leaves alone anything it doesn't recognise,** including databases, editors and GUI apps.
+- **It leaves alone anything it doesn't recognise,** including databases, editors and GUI apps. The one
+  exception is a leftover: a process whose parent is gone (a killed agent, an interrupted test run) that
+  keeps a core busy for 10 minutes. It gets lower priority, never a pause, and is listed in
+  `nodoka status` with the command that stops it. Apps and system services are never counted.
 - **Test runs are never paused, and installs never for memory.** Clocks keep running while a process
   is paused: a held test run fails its per-test timeouts, and a held download times out.
 - **It never pauses the process an interactive shell is waiting on,** so your terminal never prints
