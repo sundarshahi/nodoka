@@ -291,7 +291,11 @@ fn idle_server_sleeps_and_the_next_request_wakes_it() {
     let d = Daemon::start("idle", "idle_sleep_seconds = 2\n");
     let port = free_port();
     let s = Job(
-        d.job(&["node", "/app/node_modules/vite/bin/vite.js", "--port", &port.to_string()], &format!("serve:{port}"))
+        // opens its port 2s after starting: nodoka's first look finds no port (missed on a slow CI runner)
+        d.job(
+            &["node", "/app/node_modules/vite/bin/vite.js", "--port", &port.to_string()],
+            &format!("serve:{port}:2000"),
+        ),
     );
     let pid = s.0.id() as i32;
     assert!(eventually(15, || stopped(pid)), "idle server never went to sleep:\n{}\n{}", d.status(), d.log());

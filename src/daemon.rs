@@ -221,8 +221,10 @@ pub fn run(opts: Options) {
             });
             (tr.mem, tr.tree, tr.stoppable) = (mem, tree, stoppable);
             let running = tr.job.state == State::Running;
-            // Is it a server? Look now and then (it may bind its port a few seconds after starting).
-            if running && st.idle_s > 0 && !tr.has_listener && t.saturating_sub(tr.listener_checked) >= 20 {
+            // Is it a server? Every second while it's new (it may bind its port a few seconds after
+            // starting; a slow machine missed it at the first look), then now and then.
+            let recheck = t.saturating_sub(tr.first_seen) < 10 || t.saturating_sub(tr.listener_checked) >= 20;
+            if running && st.idle_s > 0 && !tr.has_listener && recheck {
                 tr.listener_checked = t;
                 tr.has_listener = sys::sockets(&pids(&tr.tree)).iter().any(|s| s.listen);
             }

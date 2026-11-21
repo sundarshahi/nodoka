@@ -1,6 +1,6 @@
 //! Test helper for tests/daemon.rs: pretends to be a dev tool. The tests start it with a fake
 //! command line (for example `node …/next/dist/bin/next build`) and choose what it does with
-//! FAKEJOB=burn (use CPU, with one busy child process), serve:<port> (answer TCP requests), or
+//! FAKEJOB=burn (use CPU, with one busy child process), serve:<port>[:<delay ms>] (answer TCP requests), or
 //! idle (do nothing), or leftover (use CPU after its parent is gone, for at most 60s).
 
 use std::io::{Read, Write};
@@ -38,7 +38,10 @@ fn main() {
             std::hint::black_box((0..100_000u64).sum::<u64>());
         }
     }
-    if let Some(port) = mode.strip_prefix("serve:") {
+    if let Some(spec) = mode.strip_prefix("serve:") {
+        // `serve:<port>:<ms>` binds late, the way Vite opens its port a moment after starting
+        let (port, delay) = spec.split_once(':').unwrap_or((spec, "0"));
+        std::thread::sleep(std::time::Duration::from_millis(delay.parse().unwrap()));
         // a blocking accept(), the way Tomcat- and Jetty-style servers wait for connections
         let listener = std::net::TcpListener::bind(("127.0.0.1", port.parse().unwrap())).unwrap();
         for mut conn in listener.incoming().flatten() {

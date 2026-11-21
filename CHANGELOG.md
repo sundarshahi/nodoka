@@ -31,6 +31,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 - Running `nodoka install` again on macOS (to upgrade) no longer leaves the helper off: starting the
   new one is retried until the old one has finished resuming what it paused.
+- A server that opens its port a moment after starting (Vite does) is recognised within seconds,
+  not after 20: nodoka looks every second while a job is new.
 - Test helpers never outlive their test run: the fake jobs and `nodoka daemon --test` exit once the
   process that started them is gone. A busy child of a killed fake job had kept two cores busy for 36 hours.
 
