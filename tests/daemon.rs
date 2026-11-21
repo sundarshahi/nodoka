@@ -97,6 +97,7 @@ fn spawn_daemon(home: &Path, scope: &str) -> Child {
     Command::new(BIN)
         .args(["daemon", "--test", scope])
         .env("NODOKA_HOME", home)
+        .env("NODOKA_PRESSURE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

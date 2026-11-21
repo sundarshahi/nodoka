@@ -168,7 +168,9 @@ Router, webpack, Angular, Next.js, Rails and Django woke 0.59–0.84 s after a s
   status 0, correct timing). The one exception found is zsh's `cmd & wait $!`, which returns 145.
 - **Terminal notices.** When a job started from a terminal has to wait or is paused for memory, one line
   is written to that terminal, and another when it continues.
-- **Lower priority:** nice 10, on both systems. It yields to your apps only while cores are contested
+- **Lower priority:** for every job started without a terminal (what coding agents run), dev servers
+  and headless browsers included: an agent's demo recorder held a Rails server at 100% of a core.
+  nice 10, on both systems. It yields to your apps only while cores are contested
   and costs nothing otherwise; an ordinary user can't raise it back, so the job keeps it until it ends.
   macOS's background priority (`PRIO_DARWIN_BG`) was used first because it can be undone, but it confines
   work to the efficiency cores: three `next build`s run at once took 40–42 s under it, against 8–9 s at
@@ -188,6 +190,9 @@ Router, webpack, Angular, Next.js, Rails and Django woke 0.59–0.84 s after a s
 
 - **macOS:** `sysctl kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical), the same level
   the system uses ([xnu](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_memorystatus_notify.c)).
+  That level alone isn't enough: a 16 GB Mac lagging with 12 GB in swap, swapping 150 MB/s in and
+  150 MB/s out, still reported *warn*. So the swap-in rate (`host_statistics64`, smoothed over about
+  10 s) raises it: 8 MB/s or more is warn, 32 MB/s or more is critical.
 - **Linux:** critical when less than 8% of memory is available or `full avg10` in
   `/proc/pressure/memory` reaches 10%; warn under 20% available or `some avg10` at 10%. This acts before
   [earlyoom](https://github.com/rfjakob/earlyoom) (kills at 10% available and 10% free swap) and

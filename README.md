@@ -20,8 +20,10 @@ that keeps that from happening:
   timeouts) but count toward the limit.
 - **Idle servers sleep.** A dev server nobody has used for 10 minutes is paused; the next request — or
   the next file you save in its project — wakes it in under a second, so hot reload keeps working.
-- **A brake for low memory.** When memory gets critically low, the newest build is paused and resumed
-  as soon as memory recovers — before the machine starts swapping itself to a standstill.
+- **A brake for low memory.** When memory gets critically low — or the machine keeps swapping to disk —
+  the newest busy build is paused and resumed as soon as memory recovers.
+- **Agent work yields to you.** While every core is busy, builds, tests, headless browsers and dev
+  servers that coding agents started get lower priority; ones you started in a terminal keep theirs.
 
 You keep typing `npm run dev`, `bin/rails server` and `cargo build` exactly as before. Nothing is
 turned off and nothing is killed.
@@ -123,7 +125,7 @@ file in the project was saved, and once it slept again, a real HTTP request was 
 | Leaner memory settings for Node and Bun | ✓ | ✓ (and glibc's `MALLOC_ARENA_MAX=2`) | planned |
 | A few heavy jobs at a time | ✓ | ✓ | planned |
 | Idle servers sleep, wake on a request or saved file | ✓ (FSEvents) | ✓ (inotify) | planned |
-| Low-memory brake | ✓ (kernel memory-pressure level) | ✓ (pressure-stall information and available memory) | planned |
+| Low-memory brake | ✓ (kernel memory-pressure level and swap-in rate) | ✓ (pressure-stall information and available memory) | planned |
 | Lower priority when every core is busy | ✓ (nice 10, kept until the job ends) | ✓ (nice 10, kept until the job ends) | planned |
 | Starts at login | LaunchAgent | systemd user service | |
 

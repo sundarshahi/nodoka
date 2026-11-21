@@ -129,9 +129,54 @@ pub fn sockets(pids: &[i32]) -> Vec<Sock> {
     out
 }
 
-/// kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical.
+/// 1 normal, 2 warn, 4 critical: kern.memorystatus_vm_pressure_level, raised by swapping. macOS's
+/// level stayed at "warn" while a 16 GB Mac swapped 150 MB/s in and out and lagged, so a sustained
+/// swap-in rate counts too (Linux gets the same from PSI stall time).
 pub fn pressure() -> u32 {
-    sysctl_u64("kern.memorystatus_vm_pressure_level").map(|v| v as u32).unwrap_or(1)
+    let kernel = sysctl_u64("kern.memorystatus_vm_pressure_level").map(|v| v as u32).unwrap_or(1);
+    kernel.max(thrash_level(swapin_rate()))
+}
+
+/// Swap-in MB/s, smoothed over ~10s. 0 on the first call (nothing to compare with yet).
+fn swapin_rate() -> f64 {
+    static LAST: Mutex<Option<(std::time::Instant, u64, f64)>> = Mutex::new(None);
+    let Some(bytes) = swapin_bytes() else { return 0.0 };
+    let now = std::time::Instant::now();
+    let mut last = LAST.lock().unwrap();
+    let avg = match *last {
+        Some((t, b, avg)) => {
+            let dt = now.duration_since(t).as_secs_f64().max(0.001);
+            let rate = bytes.saturating_sub(b) as f64 / dt / 1e6;
+            avg + (rate - avg) * (dt / 10.0).min(1.0)
+        }
+        None => 0.0,
+    };
+    *last = Some((now, bytes, avg));
+    avg
+}
+
+/// Bytes swapped in since boot.
+fn swapin_bytes() -> Option<u64> {
+    unsafe extern "C" {
+        fn mach_host_self() -> libc::mach_port_t; // libc marks it deprecated in favour of the mach2 crate
+    }
+    let mut vm: libc::vm_statistics64 = unsafe { zeroed() };
+    let mut n = libc::HOST_VM_INFO64_COUNT;
+    let r = unsafe {
+        libc::host_statistics64(mach_host_self(), libc::HOST_VM_INFO64, &mut vm as *mut _ as *mut i32, &mut n)
+    };
+    (r == 0).then(|| vm.swapins * unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64)
+}
+
+/// A few MB/s of swap-in is normal on a full Mac; tens of MB/s means everything waits on the disk.
+fn thrash_level(mb_per_s: f64) -> u32 {
+    if mb_per_s >= 32.0 {
+        4
+    } else if mb_per_s >= 8.0 {
+        2
+    } else {
+        1
+    }
 }
 
 pub fn mem_bytes() -> u64 {
@@ -288,4 +333,17 @@ pub fn tty_path(pid: i32) -> Option<PathBuf> {
     }
     let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
     Some(PathBuf::from("/dev").join(name))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn heavy_swapping_counts_as_memory_pressure() {
+        assert!(super::swapin_bytes().is_some(), "can't read swap statistics");
+        assert_eq!(super::thrash_level(150.0), 4, "the 150 MB/s measured on a lagging Mac is critical");
+        assert_eq!(super::thrash_level(12.0), 2);
+        assert_eq!(super::thrash_level(1.0), 1);
+        let (a, b) = (super::swapin_rate(), super::swapin_rate());
+        assert!(a >= 0.0 && b >= 0.0 && b.is_finite());
+    }
 }

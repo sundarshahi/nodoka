@@ -176,11 +176,13 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         }
     }
 
-    // 5. all cores busy → background heavy jobs yield: nice 10, kept until the job ends (an ordinary
-    //    user can't raise priority back). Never terminal jobs: someone is watching those.
+    // 5. all cores busy → background jobs yield: nice 10, kept until the job ends (an ordinary user
+    //    can't raise priority back). Dev servers too: one an agent started and drives (a demo recorder
+    //    held a Rails server at 100%) shouldn't outrank your apps. Never terminal jobs: someone is
+    //    watching those.
     for &i in &order {
         let j = &mut jobs[i];
-        if sys.cpu_busy && !j.bg && j.kind.heavy() && !j.terminal && j.state == State::Running {
+        if sys.cpu_busy && !j.bg && !j.terminal && j.state == State::Running {
             j.bg = true;
             out.push(Action::Bg(i, true));
         }
@@ -309,8 +311,8 @@ mod tests {
         let mut jobs = vec![job(Kind::Build, 60), job(Kind::Dev, 60), t];
         let mut s = sys(100, 1, 3);
         s.cpu_busy = true;
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Bg(0, true)]);
-        assert!(decide(&mut jobs, &mut s).is_empty(), "lowered once");
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Bg(0, true), Action::Bg(1, true)], "an agent's server too");
+        assert!(decide(&mut jobs, &mut s).is_empty(), "lowered once, never the terminal job");
         s.cpu_busy = false;
         s.now = 200;
         assert!(decide(&mut jobs, &mut s).is_empty(), "stays lowered: it can't be raised without root");

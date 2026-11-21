@@ -79,10 +79,17 @@ pub fn run(opts: Options) {
     // tools rename themselves at startup (npm → `npm ci`, Next → `next-build (v16)`).
     let mut seen: HashMap<(i32, u64, String), (u64, Option<Seen>)> = HashMap::new();
     let mut tracked: HashMap<Key, Tracked> = HashMap::new();
+    // tests pin it: the real machine's pressure (a busy dev Mac swaps) must not decide their outcome
+    let pressure = || {
+        opts.scope
+            .as_ref()
+            .and_then(|_| std::env::var("NODOKA_PRESSURE").ok()?.parse().ok())
+            .unwrap_or_else(sys::pressure)
+    };
     let mut leftovers: HashMap<Key, Leftover> = HashMap::new();
     let mut st = Sys {
         now: sys::now(),
-        level: sys::pressure(),
+        level: pressure(),
         level_since: sys::now(),
         cpu_busy: false,
         base_cap: cfg.heavy_jobs,
@@ -264,7 +271,7 @@ pub fn run(opts: Options) {
             }
         }
 
-        let level = sys::pressure();
+        let level = pressure();
         if level != st.level {
             log(&format!("memory pressure {} → {}", level_name(st.level), level_name(level)));
             (st.level, st.level_since) = (level, t);

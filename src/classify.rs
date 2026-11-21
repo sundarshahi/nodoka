@@ -442,6 +442,23 @@ pub fn rule(tool: &str, rest: &[String]) -> Option<Kind> {
         | "wtr" => dev_or(Test),
         "playwright" => pick(sub, &[(&["test"], Test)]),
         "cypress" => pick(sub, &[(&["run"], Test)]),
+        // a browser driven by a script (Playwright, Puppeteer, Selenium): heavy, with timeouts like a test.
+        // Only headless ones: the browser you use never runs with --headless.
+        "chrome-headless-shell" | "headless_shell" => Some(Test),
+        "chrome"
+        | "chromium"
+        | "chromium-browser"
+        | "google chrome"
+        | "google chrome for testing"
+        | "msedge"
+        | "microsoft edge"
+        | "firefox"
+            if rest
+                .iter()
+                .any(|a| matches!(a.as_str(), "--headless" | "-headless") || a.starts_with("--headless=")) =>
+        {
+            Some(Test)
+        }
         "webpack" | "webpack-cli" => Some(if watch || matches!(sub, "serve" | "s" | "server") { Dev } else { Build }),
         "webpack-dev-server" | "nodemon" | "ts-node-dev" | "tsnd" | "node-dev" | "serve" | "http-server"
         | "live-server" | "lite-server" | "json-server" | "browser-sync" | "sirv" | "servor" | "start-storybook"
@@ -792,6 +809,20 @@ mod tests {
 
     fn c(cmd: &str) -> Option<Kind> {
         classify(&cmd.split(' ').map(String::from).collect::<Vec<_>>(), &Custom::new())
+    }
+
+    #[test]
+    fn browsers_driven_by_scripts_are_heavy_but_the_users_browser_is_not() {
+        use Kind::*;
+        let shell = "/Users/u/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell";
+        assert_eq!(c(&format!("{shell} --disable-field-trial-config --headless --no-sandbox")), Some(Test));
+        assert_eq!(c("/usr/bin/chromium --headless=new --remote-debugging-port=0"), Some(Test));
+        assert_eq!(c("/opt/firefox/firefox -headless -marionette"), Some(Test));
+        let mac_chrome =
+            vec!["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(), "--headless".into()];
+        assert_eq!(classify(&mac_chrome, &Custom::new()), Some(Test));
+        assert_eq!(c("/usr/bin/chromium --profile-directory=Default"), None);
+        assert_eq!(c("/Applications/Firefox.app/Contents/MacOS/firefox"), None);
     }
 
     #[test]

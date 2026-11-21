@@ -10,6 +10,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Leftover guard: a process whose parent is gone that keeps a core busy for 10 minutes gets lower
   priority and is listed in `nodoka status` with the command that stops it
   (`leftover_busy_minutes`, 0 turns it off).
+- Headless browsers (Playwright's `chrome-headless-shell`, Chrome, Chromium, Edge or Firefox with
+  `--headless`) are recognised as heavy work, even when a plain script drives them.
+- On macOS, sustained swapping counts as memory pressure. Apple's level stayed at *warn* while a Mac
+  swapped 150 MB/s, so the memory brake never acted.
+
+### Changed
+
+- Dev servers started without a terminal (by coding agents) get lower priority while every core is
+  busy, like builds and tests.
 
 ### Fixed
 
