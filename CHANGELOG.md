@@ -15,8 +15,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - On macOS, sustained swapping counts as memory pressure. Apple's level stayed at *warn* while a Mac
   swapped 150 MB/s, so the memory brake never acted.
 
+- CPU budget for agent work: builds, installs and dev servers started without a terminal share at
+  most half your cores (`agent_cpu_percent`), running in slices of each second past that. Test runs
+  and anything started in a terminal are exempt.
+
 ### Changed
 
+- The memory brake never pauses the last busy build. A lone 5 GB type check paused for memory
+  flapped every 25 seconds, swapping itself back in each time; under pressure builds now go one at a
+  time, never none.
 - Dev servers started without a terminal (by coding agents) get lower priority while every core is
   busy, like builds and tests.
 

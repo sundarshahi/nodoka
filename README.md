@@ -21,9 +21,13 @@ that keeps that from happening:
 - **Idle servers sleep.** A dev server nobody has used for 10 minutes is paused; the next request — or
   the next file you save in its project — wakes it in under a second, so hot reload keeps working.
 - **A brake for low memory.** When memory gets critically low — or the machine keeps swapping to disk —
-  the newest busy build is paused and resumed as soon as memory recovers.
+  builds go one at a time: the newer ones are paused and resumed as soon as memory recovers, and the
+  oldest keeps running so the work always moves.
 - **Agent work yields to you.** While every core is busy, builds, tests, headless browsers and dev
   servers that coding agents started get lower priority; ones you started in a terminal keep theirs.
+- **A CPU budget for agents.** Builds, installs and dev servers that agents started share at most half
+  your cores. Past that they run in slices of each second, so the other half stays free for you and
+  the machine runs cooler. Test runs are never sliced.
 
 You keep typing `npm run dev`, `bin/rails server` and `cargo build` exactly as before. Nothing is
 turned off and nothing is killed.
@@ -154,6 +158,7 @@ cpus = 4                  # worker/thread count each tool is told about (default
 idle_sleep_minutes = 10   # 0 turns idle sleep off
 max_wait_seconds = 60     # a waiting job starts anyway after this long
 leftover_busy_minutes = 10  # a busy process left with no parent gets lower priority after this long; 0 turns it off
+agent_cpu_percent = 50      # agents' builds, installs and servers share at most this much CPU; 100 turns it off
 
 # teach nodoka about your own tools (program names, comma-separated)
 dev = my-server

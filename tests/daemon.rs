@@ -22,7 +22,8 @@ impl Daemon {
         let home = std::env::temp_dir().join(format!("nodoka-it-{scope}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
-        fs::write(home.join("config"), config).unwrap();
+        // the CPU budget slices busy jobs; only the test about it turns it on (a later line wins)
+        fs::write(home.join("config"), format!("agent_cpu_percent = 100\n{config}")).unwrap();
         let child = spawn_daemon(&home, scope);
         Daemon { home, scope: scope.into(), child }
     }
@@ -192,6 +193,26 @@ fn a_fake_jobs_busy_child_stops_when_the_job_is_killed() {
         libc::kill(c, libc::SIGKILL);
     });
     assert!(ok, "the busy child outlived its job");
+}
+
+#[test]
+fn agent_work_over_its_cpu_share_runs_in_slices_but_tests_never_do() {
+    let d = Daemon::start("share", "agent_cpu_percent = 1\nheavy_jobs = 4\n");
+    let build = Job(d.job(&["go", "build", "./..."], "burn"));
+    let test = Job(d.job(&["node", "/x/node_modules/vitest/vitest.mjs", "run"], "burn"));
+    let (b, t) = (build.0.id() as i32, test.0.id() as i32);
+    assert!(eventually(10, || d.log().contains("share cpu")), "never held back:\n{}", d.log());
+    let (mut b_stopped, mut b_ran, mut t_stopped) = (false, false, false);
+    let end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < end {
+        (b_stopped, b_ran, t_stopped) = (b_stopped || stopped(b), b_ran || !stopped(b), t_stopped || stopped(t));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let ledger = fs::read_to_string(d.home.join("paused")).unwrap_or_default();
+    assert!(b_stopped && b_ran, "the build should run in slices (stopped: {b_stopped}, ran: {b_ran})");
+    assert!(!t_stopped, "a test run was paused");
+    assert!(ledger.lines().any(|l| l.starts_with(&format!("{b} "))), "slices must be in the crash ledger: {ledger}");
+    assert!(d.status().contains("agent work held to"), "{}", d.status());
 }
 
 #[test]

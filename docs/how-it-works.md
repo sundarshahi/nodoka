@@ -111,9 +111,12 @@ Things that make recognition hard, and how they are handled:
   left as they are.
 - **Low-memory brake.** Only at *critical* pressure: on a busy 16 GB Mac, *warn* can be the normal state
   for hours, and acting on it would make jobs stutter. One job is paused every 5 seconds, newest first,
-  busy builds and tests only — a paused install would have its downloads time out, and pausing an idle
-  job (a `webpack --watch` between rebuilds) stops nothing from growing. Paused jobs are resumed one by
-  one after 20 calm seconds, and never stay paused longer than 10 minutes.
+  busy builds only — a paused test fails its timeouts, a paused install would have its downloads time
+  out, and pausing an idle job (a `webpack --watch` between rebuilds) stops nothing from growing. The
+  last busy build always keeps running: pausing it calms memory only until it resumes, and a lone 5 GB
+  `tsc` that was paused anyway flapped every 25 seconds, swapping itself back in each time. So under
+  pressure builds go one at a time, never none. Paused jobs are resumed one by one after 20 calm
+  seconds, and never stay paused longer than 10 minutes.
 - **Idle sleep.** A job whose processes listen on a TCP port is a server. It counts as busy while it uses
   more than about 2% of a core or a visitor connects. After `idle_sleep_minutes` (10) without either, it
   is paused. A server that keeps the CPU busy with nobody visiting (a polling file watcher, a runaway
@@ -175,6 +178,13 @@ Router, webpack, Angular, Next.js, Rails and Django woke 0.59–0.84 s after a s
   macOS's background priority (`PRIO_DARWIN_BG`) was used first because it can be undone, but it confines
   work to the efficiency cores: three `next build`s run at once took 40–42 s under it, against 8–9 s at
   normal priority and 7 s at nice 10.
+- **CPU budget for agent work.** Builds, installs and dev servers started without a terminal share
+  `agent_cpu_percent` (50) of all cores. Each second nodoka measures what they used; over budget,
+  they're all stopped for part of the next second (`SIGSTOP`, then `SIGCONT`), the way
+  [cpulimit](https://github.com/opsengine/cpulimit) works, so together they get the budget. Each still
+  runs at least a quarter of every second: slower, never hung. Test runs (including headless
+  browsers) are exempt, because a stopped test still loses time against its timeouts, and so is
+  anything started in a terminal. Slices are in the crash ledger before the first one starts.
 - **Leftovers.** A process whose parent died is handed to launchd (macOS) or init or the user's
   `systemd` (Linux). One that keeps at least a quarter of a core busy for `leftover_busy_minutes` (10)
   gets nice 10 once, a log line and a line in `nodoka status` with `kill <pid>`. Apps, app extensions

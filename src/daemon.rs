@@ -9,7 +9,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -45,6 +45,9 @@ struct Tracked {
     /// While asleep: watches the project, so saving a file wakes the server (hot reload keeps working).
     watch: Option<sys::Watch>,
     noticed: State,
+    /// CPU time used since the last tick, and whether it's held to the agent CPU budget right now.
+    used: u64,
+    sliced: bool,
 }
 
 pub struct Options {
@@ -107,6 +110,7 @@ pub fn run(opts: Options) {
     ));
     let mut last_status = String::new();
     let mut tick = 0u64;
+    let (mut duty, mut last_tick) = (1.0f64, Instant::now());
     // a test helper whose test run was killed stops too (and resumes what it paused) instead of running forever
     let parent = std::os::unix::process::parent_id();
     let orphaned = || opts.scope.is_some() && std::os::unix::process::parent_id() != parent;
@@ -212,6 +216,8 @@ pub fn run(opts: Options) {
                 snapshot: HashSet::new(),
                 watch: None,
                 noticed: State::Running,
+                used: 0,
+                sliced: false,
             });
             (tr.mem, tr.tree, tr.stoppable) = (mem, tree, stoppable);
             let running = tr.job.state == State::Running;
@@ -234,6 +240,7 @@ pub fn run(opts: Options) {
             if busy {
                 tr.last_active = t;
             }
+            tr.used = cpu.saturating_sub(tr.cpu_ns);
             tr.cpu_ns = cpu;
             let edited = tr.watch.as_mut().is_some_and(|w| w.changed());
             let j = &mut tr.job;
@@ -371,7 +378,40 @@ pub fn run(opts: Options) {
             }
         }
 
+        // CPU budget for agent work: measure what it used, then let it run only part of the next second.
+        let dt = last_tick.elapsed().as_secs_f64().max(0.2);
+        last_tick = Instant::now();
+        let share: HashSet<Key> =
+            tracked.iter().filter(|(_, tr)| policy::shares_budget(&tr.job)).map(|(k, _)| *k).collect();
+        let used = share.iter().map(|k| tracked[k].used).sum::<u64>() as f64 / 1e9 / dt;
+        let budget = cores as f64 * cfg.agent_cpu_percent as f64 / 100.0;
+        let new_duty =
+            if cfg.agent_cpu_percent >= 100 || share.is_empty() { 1.0 } else { policy::duty(used, duty, budget) };
+        if (new_duty < 1.0) != (duty < 1.0) {
+            log(&if new_duty < 1.0 {
+                format!("share cpu       agent work used {used:.1} cores: held to {budget:.1} of {cores}")
+            } else {
+                "share cpu       agent work back to full speed".into()
+            });
+        }
+        duty = new_duty;
+        let mut slices_changed = false;
+        for (k, tr) in tracked.iter_mut() {
+            let sliced = duty < 1.0 && share.contains(k);
+            slices_changed |= tr.sliced != sliced;
+            tr.sliced = sliced;
+        }
+        if slices_changed {
+            write_ledger(&ledger, &tracked); // before any slice, so a crash mid-slice is undone on restart
+        }
+
         let mut status = render(&tracked, &st, cores);
+        if duty < 1.0 {
+            status += &format!(
+                "agent work held to {budget:.1} of {cores} cores: it runs {:.0}% of each second\n",
+                duty * 100.0
+            );
+        }
         for ((pid, _), l) in &leftovers {
             if let Some(label) = l.label.as_ref().filter(|l| !l.is_empty()) {
                 status +=
@@ -379,7 +419,19 @@ pub fn run(opts: Options) {
             }
         }
         write_status(&home, &mut last_status, &status);
-        sleep_tick();
+        let slice: Vec<i32> = if opts.dry_run {
+            vec![]
+        } else {
+            tracked.values().filter(|tr| tr.sliced).flat_map(|tr| pids(&tr.stoppable)).collect()
+        };
+        if slice.is_empty() {
+            sleep_tick();
+        } else {
+            slice.iter().for_each(|&p| sys::signal(p, true));
+            std::thread::sleep(Duration::from_secs_f64(1.0 - duty));
+            slice.iter().for_each(|&p| sys::signal(p, false));
+            std::thread::sleep(Duration::from_secs_f64(duty));
+        }
     }
     log("stopping: resuming everything");
     recover(&ledger);
@@ -546,7 +598,7 @@ fn write_status(home: &Path, last: &mut String, s: &str) {
 fn write_ledger(path: &Path, tracked: &HashMap<Key, Tracked>) {
     let lines: String = tracked
         .values()
-        .filter(|tr| tr.job.state != State::Running || tr.job.bg)
+        .filter(|tr| tr.job.state != State::Running || tr.job.bg || tr.sliced)
         .flat_map(|tr| tr.stoppable.iter().map(|(p, id)| format!("{p} {id}\n")))
         .collect();
     fs::write(path, lines).ok();

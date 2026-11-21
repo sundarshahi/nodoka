@@ -85,6 +85,22 @@ pub const MAX_PRESSURE_PAUSE_S: u64 = 600;
 pub const PRESSURE_STEP_S: u64 = 5;
 pub const CALM_BEFORE_RESUME_S: u64 = 20;
 
+/// Each job always runs at least this share of every second: slowed, never hung.
+pub const MIN_DUTY: f64 = 0.25;
+
+/// CPU budget for agent work: the share of each second it may run so that, together, it uses at
+/// most `budget` cores. `used` is the cores it used last second while running `duty` of it.
+pub fn duty(used: f64, duty: f64, budget: f64) -> f64 {
+    let demand = used / duty.max(MIN_DUTY);
+    if demand <= budget { 1.0 } else { (budget / demand).max(MIN_DUTY) }
+}
+
+/// Whether a job counts toward the agent CPU budget: running, started without a terminal, and not
+/// a test run (pausing tests, even briefly, eats into their timeouts).
+pub fn shares_budget(j: &Job) -> bool {
+    j.state == State::Running && !j.terminal && j.pausable && j.kind != Kind::Test
+}
+
 pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     let now = sys.now;
     let cap = sys.cap();
@@ -139,12 +155,18 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     //    Busy builds only. Clocks keep running while a process is paused, so a paused test run would
     //    fail its per-test timeouts (5s in Jest and Vitest) and a paused install its downloads; and
     //    pausing an idle job (a watcher between rebuilds) stops nothing from growing.
+    //    Never the last busy build: pausing it calms memory only until it resumes, then it pauses
+    //    again (a lone 5 GB type check flapped every 25s, swapping back in each time, and barely moved).
+    //    Under pressure builds go one at a time, never none.
     let since_act = now.saturating_sub(sys.last_pressure_act);
     if sys.level >= 4 && since_act >= PRESSURE_STEP_S {
-        let victim = order.iter().rev().copied().find(|&i| {
-            let j = &jobs[i];
-            j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build
-        });
+        let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build;
+        let victim = order
+            .iter()
+            .rev()
+            .copied()
+            .find(|&i| busy(&jobs[i]))
+            .filter(|_| jobs.iter().filter(|j| busy(j)).count() >= 2);
         if let Some(i) = victim {
             set(&mut jobs[i], State::PressurePaused);
             out.push(Action::Pause(i));
@@ -275,7 +297,10 @@ mod tests {
         s.now = 102; // too soon for another step
         assert!(decide(&mut jobs, &mut s).is_empty());
         s.now = 106;
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        assert!(
+            decide(&mut jobs, &mut s).is_empty(),
+            "the last busy build keeps running: pausing it only calms memory until it resumes (it flapped every 25s)"
+        );
         s.now = 112;
         assert!(decide(&mut jobs, &mut s).is_empty(), "tests, installs and idle jobs are never paused for memory");
         s.level = 2; // pressure eases: resume the longest-paused first, after a calm period
@@ -316,5 +341,19 @@ mod tests {
         s.cpu_busy = false;
         s.now = 200;
         assert!(decide(&mut jobs, &mut s).is_empty(), "stays lowered: it can't be raised without root");
+    }
+
+    #[test]
+    fn agent_work_is_held_to_its_cpu_share_but_never_stopped_for_good() {
+        assert_eq!(duty(2.0, 1.0, 5.0), 1.0, "under budget: full speed");
+        assert!((duty(8.0, 1.0, 4.0) - 0.5).abs() < 1e-9, "twice the budget: half of each second");
+        assert!((duty(2.0, 0.5, 4.0) - 1.0).abs() < 1e-9, "demand fell to the budget: full speed again");
+        assert_eq!(duty(40.0, 1.0, 1.0), MIN_DUTY, "always some progress");
+        let mut t = job(Kind::Build, 60);
+        assert!(shares_budget(&t));
+        t.terminal = true;
+        assert!(!shares_budget(&t), "what you started in a terminal is never sliced");
+        assert!(!shares_budget(&job(Kind::Test, 60)), "nor test runs");
+        assert!(shares_budget(&job(Kind::Dev, 60)));
     }
 }
