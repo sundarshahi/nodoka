@@ -21,8 +21,8 @@ that keeps that from happening:
 - **Idle servers sleep.** A dev server nobody has used for 10 minutes is paused; the next request — or
   the next file you save in its project — wakes it in under a second, so hot reload keeps working.
 - **A brake for low memory.** When memory gets critically low — or the machine keeps swapping to disk —
-  builds go one at a time: the newer ones are paused and resumed as soon as memory recovers, and the
-  oldest keeps running so the work always moves.
+  busy builds are paused, newest first, and each resumes once there's free memory for all of it (at
+  most 10 minutes later), so one huge build can't freeze the machine.
 - **Agent work yields to you.** While every core is busy, builds, tests, headless browsers and dev
   servers that coding agents started get lower priority; ones you started in a terminal keep theirs.
 - **A CPU budget for agents.** Builds, installs and dev servers that agents started share at most half

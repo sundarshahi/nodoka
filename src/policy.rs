@@ -29,6 +29,8 @@ pub struct Job {
     pub state: State,
     pub state_since: u64,
     pub bg: bool,
+    /// Memory of the whole tree in bytes (Activity Monitor's "Memory", swapped-out part included).
+    pub mem: u64,
 }
 
 impl Job {
@@ -46,6 +48,7 @@ impl Job {
             state: State::Running,
             state_since: now,
             bg: false,
+            mem: 0,
         }
     }
 }
@@ -61,6 +64,8 @@ pub struct Sys {
     pub idle_s: u64, // 0 = idle sleep off
     pub max_wait_s: u64,
     pub last_pressure_act: u64,
+    /// Memory the system can hand out without swapping, in bytes.
+    pub avail: u64,
 }
 
 impl Sys {
@@ -155,18 +160,11 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     //    Busy builds only. Clocks keep running while a process is paused, so a paused test run would
     //    fail its per-test timeouts (5s in Jest and Vitest) and a paused install its downloads; and
     //    pausing an idle job (a watcher between rebuilds) stops nothing from growing.
-    //    Never the last busy build: pausing it calms memory only until it resumes, then it pauses
-    //    again (a lone 5 GB type check flapped every 25s, swapping back in each time, and barely moved).
-    //    Under pressure builds go one at a time, never none.
+    //    The last busy build too: a lone 9 GB `next build` froze a 16 GB Mac while nodoka watched.
     let since_act = now.saturating_sub(sys.last_pressure_act);
     if sys.level >= 4 && since_act >= PRESSURE_STEP_S {
         let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build;
-        let victim = order
-            .iter()
-            .rev()
-            .copied()
-            .find(|&i| busy(&jobs[i]))
-            .filter(|_| jobs.iter().filter(|j| busy(j)).count() >= 2);
+        let victim = order.iter().rev().copied().find(|&i| busy(&jobs[i]));
         if let Some(i) = victim {
             set(&mut jobs[i], State::PressurePaused);
             out.push(Action::Pause(i));
@@ -177,8 +175,11 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         let mut paused: Vec<usize> =
             order.iter().copied().filter(|&i| jobs[i].state == State::PressurePaused).collect();
         paused.sort_by_key(|&i| jobs[i].state_since);
+        // Resume only once there's room for all of it. Calm alone isn't enough: pausing the build is
+        // what calmed memory, so it went critical again 3s after resuming (a lone 5 GB type check
+        // flapped every 25s). Never held longer than MAX_PRESSURE_PAUSE_S.
         if let Some(&i) = paused.first() {
-            if calm || now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S {
+            if calm && sys.avail >= jobs[i].mem || now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S {
                 set(&mut jobs[i], State::Running);
                 out.push(Action::Resume(i));
                 sys.last_pressure_act = now;
@@ -230,6 +231,7 @@ mod tests {
             idle_s: 600,
             max_wait_s: 60,
             last_pressure_act: 0,
+            avail: 8 << 30,
         }
     }
 
@@ -286,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn critical_pauses_newest_busy_build_only_and_resumes_when_calm() {
+    fn critical_pauses_busy_builds_newest_first_and_resumes_when_there_is_room() {
         let mut idle_watcher = job(Kind::Build, 20); // e.g. `webpack --watch` between rebuilds
         idle_watcher.active = false;
         let mut jobs =
@@ -297,18 +299,21 @@ mod tests {
         s.now = 102; // too soon for another step
         assert!(decide(&mut jobs, &mut s).is_empty());
         s.now = 106;
-        assert!(
-            decide(&mut jobs, &mut s).is_empty(),
-            "the last busy build keeps running: pausing it only calms memory until it resumes (it flapped every 25s)"
-        );
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)], "the last busy build too: one froze a Mac");
         s.now = 112;
         assert!(decide(&mut jobs, &mut s).is_empty(), "tests, installs and idle jobs are never paused for memory");
         s.level = 2; // pressure eases: resume the longest-paused first, after a calm period
         s.level_since = 112;
         s.now = 120;
         assert!(decide(&mut jobs, &mut s).is_empty());
+        jobs[1].mem = 9 << 30; // but not while there's no room for it: it would push memory straight back
         s.now = 132;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "calm came from pausing it; resuming would flap");
+        s.avail = 10 << 30;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1)]);
+        s.avail = 0;
+        s.now = 106 + MAX_PRESSURE_PAUSE_S;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "never held for good");
     }
 
     #[test]

@@ -113,10 +113,11 @@ Things that make recognition hard, and how they are handled:
   for hours, and acting on it would make jobs stutter. One job is paused every 5 seconds, newest first,
   busy builds only — a paused test fails its timeouts, a paused install would have its downloads time
   out, and pausing an idle job (a `webpack --watch` between rebuilds) stops nothing from growing. The
-  last busy build always keeps running: pausing it calms memory only until it resumes, and a lone 5 GB
-  `tsc` that was paused anyway flapped every 25 seconds, swapping itself back in each time. So under
-  pressure builds go one at a time, never none. Paused jobs are resumed one by one after 20 calm
-  seconds, and never stay paused longer than 10 minutes.
+  last busy build is paused too: a lone 9 GB `next build` froze a 16 GB Mac. Paused jobs are resumed one
+  by one, oldest first, after 20 calm seconds *and* once the system can hand out as much memory as the
+  job holds (free, inactive and purgeable pages on macOS, `MemAvailable` on Linux). Calm alone isn't
+  enough: pausing the build is what calmed memory, and a lone 5 GB `tsc` resumed on calm went critical
+  again 3 seconds later, flapping every 25 seconds. No job stays paused longer than 10 minutes.
 - **Idle sleep.** A job whose processes listen on a TCP port is a server. It counts as busy while it uses
   more than about 2% of a core or a visitor connects. After `idle_sleep_minutes` (10) without either, it
   is paused. A server that keeps the CPU busy with nobody visiting (a polling file watcher, a runaway

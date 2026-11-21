@@ -150,6 +150,11 @@ fn meminfo() -> HashMap<String, u64> {
         .collect()
 }
 
+/// Memory the kernel can hand out without swapping.
+pub fn avail_bytes() -> u64 {
+    meminfo().get("MemAvailable").copied().unwrap_or(0)
+}
+
 pub fn mem_bytes() -> u64 {
     meminfo().get("MemTotal").copied().unwrap_or(8 << 30)
 }

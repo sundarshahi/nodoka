@@ -103,6 +103,7 @@ pub fn run(opts: Options) {
         idle_s: cfg.idle_sleep_s,
         max_wait_s: cfg.max_wait_s,
         last_pressure_act: 0,
+        avail: 0,
     };
     log(&format!(
         "started: {} heavy jobs at once, idle sleep {}, {} worker cap{}{}",
@@ -249,6 +250,7 @@ pub fn run(opts: Options) {
             let j = &mut tr.job;
             j.age_s = t.saturating_sub(tr.first_seen);
             j.terminal = root.tty;
+            j.mem = tr.mem;
             j.pausable = !tr.stoppable.is_empty();
             // A server nobody has visited for 3× the idle time counts as idle even if it keeps the
             // CPU busy (polling file watchers, runaway loops).
@@ -292,6 +294,7 @@ pub fn run(opts: Options) {
             fs::write(home.join("pressure"), level.to_string()).ok();
         }
         st.now = t;
+        st.avail = sys::avail_bytes();
         st.cpu_busy = sys::load1() > cores as f64;
         let keys: Vec<Key> = tracked.keys().copied().collect();
         let mut jobs: Vec<Job> = keys.iter().map(|k| tracked[k].job.clone()).collect();

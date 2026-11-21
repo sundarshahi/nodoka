@@ -21,9 +21,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- The memory brake never pauses the last busy build. A lone 5 GB type check paused for memory
-  flapped every 25 seconds, swapping itself back in each time; under pressure builds now go one at a
-  time, never none.
+- The memory brake resumes a paused build only once there's free memory for all of it, not just after
+  20 calm seconds (a lone 5 GB type check flapped every 25). It pauses the last busy build too: a
+  lone 9 GB `next build` froze a 16 GB Mac while nodoka let it run.
 - Dev servers started without a terminal (by coding agents) get lower priority while every core is
   busy, like builds and tests.
 

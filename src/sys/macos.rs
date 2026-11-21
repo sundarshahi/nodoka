@@ -157,6 +157,17 @@ fn swapin_rate() -> f64 {
 
 /// Bytes swapped in since boot.
 fn swapin_bytes() -> Option<u64> {
+    vm_stats().map(|(vm, page)| vm.swapins * page)
+}
+
+/// Memory macOS can hand out without swapping: free, inactive, speculative and purgeable pages.
+pub fn avail_bytes() -> u64 {
+    vm_stats().map_or(0, |(vm, page)| {
+        (vm.free_count + vm.inactive_count + vm.speculative_count + vm.purgeable_count) as u64 * page
+    })
+}
+
+fn vm_stats() -> Option<(libc::vm_statistics64, u64)> {
     unsafe extern "C" {
         fn mach_host_self() -> libc::mach_port_t; // libc marks it deprecated in favour of the mach2 crate
     }
@@ -165,7 +176,7 @@ fn swapin_bytes() -> Option<u64> {
     let r = unsafe {
         libc::host_statistics64(mach_host_self(), libc::HOST_VM_INFO64, &mut vm as *mut _ as *mut i32, &mut n)
     };
-    (r == 0).then(|| vm.swapins * unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64)
+    (r == 0).then(|| (vm, unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64))
 }
 
 /// A few MB/s of swap-in is normal on a full Mac; tens of MB/s means everything waits on the disk.
