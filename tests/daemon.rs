@@ -498,6 +498,8 @@ fn a_freezing_machine_pauses_even_a_slowed_build() {
     let d = Daemon::start_env("freeze", "max_wait_seconds = 1", &env);
     let build = Job(d.job(&["node", "/app/node_modules/next/dist/bin/next", "build"], "burn"));
     let pid = build.0.id() as i32;
-    assert!(eventually(20, || stopped(pid)), "not paused:\n{}", d.log());
-    assert!(d.status().contains("paused: low memory"), "{}", d.status());
+    // a new build may first wait for a slot (also stopped): wait for the freeze pause itself
+    let paused = eventually(20, || d.status().contains("paused: low memory"));
+    assert!(paused, "not paused for memory:\n{}\n{}", d.status(), d.log());
+    assert!(stopped(pid));
 }
