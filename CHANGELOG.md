@@ -26,6 +26,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A build paused for memory for 10 minutes now runs to the end at low priority, one at a time, even
+  while memory stays critical. Before, it could stay paused for hours, holding its memory while its
+  agent waited (two type checks held 7 GB for 3 hours).
+
 - The memory brake resumes a paused build only once there's free memory for all of it, not just after
   20 calm seconds (a lone 5 GB type check flapped every 25). It pauses the last busy build too: a
   lone 9 GB `next build` froze a 16 GB Mac while nodoka let it run.

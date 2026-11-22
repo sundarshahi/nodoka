@@ -25,8 +25,9 @@ that keeps that from happening:
   waits until there's room (at most 10 minutes) instead of starting, growing and then being paused
   still holding it all. Test runs never wait.
 - **A brake for low memory.** When memory gets critically low — or the machine keeps swapping to disk —
-  busy builds are paused, newest first, and each resumes once there's free memory for all of it (at
-  most 10 minutes later), so one huge build can't freeze the machine.
+  busy builds are paused, newest first, and each resumes once there's free memory for all of it, so
+  one huge build can't freeze the machine. One that has waited 10 minutes runs to the end at low
+  priority (one at a time) so it finishes and gives its memory back.
 - **Agent work yields to you.** While every core is busy, builds, tests, headless browsers and dev
   servers that coding agents started get lower priority; ones you started in a terminal keep theirs.
 - **A CPU budget for agents.** Builds, installs and dev servers that agents started share at most half

@@ -33,6 +33,8 @@ pub struct Job {
     pub mem: u64,
     /// Memory this command needed the last time it ran in this folder (0: not known yet).
     pub expect: u64,
+    /// Waited the longest a job is ever held for memory: it runs to the end and isn't paused again.
+    pub turn: bool,
 }
 
 impl Job {
@@ -52,6 +54,7 @@ impl Job {
             bg: false,
             mem: 0,
             expect: 0,
+            turn: false,
         }
     }
 }
@@ -180,25 +183,42 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     //    fail its per-test timeouts (5s in Jest and Vitest) and a paused install its downloads; and
     //    pausing an idle job (a watcher between rebuilds) stops nothing from growing.
     //    The last busy build too: a lone 9 GB `next build` froze a 16 GB Mac while nodoka watched.
+    //    A job that has waited MAX_PRESSURE_PAUSE_S gets its turn, even while memory stays critical:
+    //    it runs to the end at low priority and isn't paused again, one such job at a time. Paused,
+    //    it holds its memory for good and its agent waits forever: two type checks held 7 GB for 3
+    //    hours, resumed every 10 minutes only to be paused again 5 seconds later.
     let since_act = now.saturating_sub(sys.last_pressure_act);
-    if sys.level >= 4 && since_act >= PRESSURE_STEP_S {
-        let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build;
-        let victim = order.iter().rev().copied().find(|&i| busy(&jobs[i]));
-        if let Some(i) = victim {
-            set(&mut jobs[i], State::PressurePaused);
-            out.push(Action::Pause(i));
-            sys.last_pressure_act = now;
-        }
-    } else if since_act >= PRESSURE_STEP_S {
-        let calm = sys.level < 4 && now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
+    if since_act >= PRESSURE_STEP_S {
         let mut paused: Vec<usize> =
             order.iter().copied().filter(|&i| jobs[i].state == State::PressurePaused).collect();
         paused.sort_by_key(|&i| jobs[i].state_since);
-        // Resume only once there's room for all of it. Calm alone isn't enough: pausing the build is
-        // what calmed memory, so it went critical again 3s after resuming (a lone 5 GB type check
-        // flapped every 25s). Never held longer than MAX_PRESSURE_PAUSE_S.
-        if let Some(&i) = paused.first() {
-            if calm && room >= jobs[i].mem || now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S {
+        let turn_running = jobs.iter().any(|j| j.turn && j.state == State::Running);
+        let oldest = paused.first().copied();
+        let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build && !j.turn;
+        if let Some(i) =
+            oldest.filter(|&i| !turn_running && now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S)
+        {
+            let j = &mut jobs[i];
+            set(j, State::Running);
+            j.turn = true;
+            out.push(Action::Resume(i));
+            if !j.bg && !j.terminal {
+                j.bg = true;
+                out.push(Action::Bg(i, true));
+            }
+            sys.last_pressure_act = now;
+        } else if sys.level >= 4 {
+            if let Some(i) = order.iter().rev().copied().find(|&i| busy(&jobs[i])) {
+                set(&mut jobs[i], State::PressurePaused);
+                out.push(Action::Pause(i));
+                sys.last_pressure_act = now;
+            }
+        } else if let Some(i) = oldest {
+            // Resume only once there's room for all of it. Calm alone isn't enough: pausing the build
+            // is what calmed memory, so it went critical again 3s after resuming (a lone 5 GB type
+            // check flapped every 25s).
+            let calm = now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
+            if calm && room >= jobs[i].mem {
                 set(&mut jobs[i], State::Running);
                 out.push(Action::Resume(i));
                 sys.last_pressure_act = now;
@@ -332,7 +352,26 @@ mod tests {
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1)]);
         s.avail = 0;
         s.now = 106 + MAX_PRESSURE_PAUSE_S;
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "never held for good");
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0), Action::Bg(0, true)], "never held for good");
+    }
+
+    #[test]
+    fn a_build_held_the_longest_runs_to_the_end_even_while_memory_stays_critical() {
+        let mut jobs = vec![job(Kind::Build, 60), job(Kind::Build, 50)];
+        jobs.iter_mut().for_each(|j| j.admitted = true);
+        let mut s = sys(100, 4, 3);
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(1)]);
+        s.now = 105;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        s.now = 100 + MAX_PRESSURE_PAUSE_S; // still critical
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1), Action::Bg(1, true)], "its turn");
+        for now in [705, 710, 800, 2000] {
+            s.now = now;
+            assert!(decide(&mut jobs, &mut s).is_empty(), "not paused again, and the next waits its turn");
+        }
+        jobs.remove(1); // it finished
+        s.now = 2005;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0), Action::Bg(0, true)], "then the next");
     }
 
     #[test]

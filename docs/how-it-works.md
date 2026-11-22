@@ -124,7 +124,10 @@ Things that make recognition hard, and how they are handled:
   by one, oldest first, after 20 calm seconds *and* once the system can hand out as much memory as the
   job holds (free, inactive and purgeable pages on macOS, `MemAvailable` on Linux). Calm alone isn't
   enough: pausing the build is what calmed memory, and a lone 5 GB `tsc` resumed on calm went critical
-  again 3 seconds later, flapping every 25 seconds. No job stays paused longer than 10 minutes.
+  again 3 seconds later, flapping every 25 seconds. A job paused for 10 minutes gets its turn, even
+  while memory stays critical: it runs to the end at low priority and isn't paused again, one such
+  job at a time. A paused job keeps its memory, and its agent waits on it; before this, two type
+  checks held 7 GB for 3 hours.
 - **Idle sleep.** A job whose processes listen on a TCP port is a server. It counts as busy while it uses
   more than about 2% of a core or a visitor connects. After `idle_sleep_minutes` (10) without either, it
   is paused. A server that keeps the CPU busy with nobody visiting (a polling file watcher, a runaway
