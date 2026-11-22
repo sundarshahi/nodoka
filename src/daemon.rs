@@ -48,6 +48,9 @@ struct Tracked {
     /// CPU time used since the last tick, and whether it's held to the agent CPU budget right now.
     used: u64,
     sliced: bool,
+    /// Folder and command, for remembering how much memory this job needed; its peak so far.
+    place: Option<(PathBuf, String)>,
+    peak: u64,
 }
 
 pub struct Options {
@@ -93,7 +96,16 @@ pub fn run(opts: Options) {
             .and_then(|_| std::env::var("NODOKA_PRESSURE").ok()?.parse().ok())
             .unwrap_or_else(sys::pressure)
     };
+    let avail = || {
+        opts.scope
+            .as_ref()
+            .and_then(|_| std::env::var("NODOKA_AVAIL_MB").ok()?.parse::<u64>().ok().map(|mb| mb << 20))
+            .unwrap_or_else(sys::avail_bytes)
+    };
     let mut leftovers: HashMap<Key, Leftover> = HashMap::new();
+    // ponytail: in memory, so a restart forgets; save to a file if that turns out to matter
+    let mut peaks: HashMap<(PathBuf, String), u64> = HashMap::new();
+    let mut apps: Vec<(String, u64)> = vec![];
     let mut st = Sys {
         now: sys::now(),
         level: pressure(),
@@ -200,28 +212,36 @@ pub fn run(opts: Options) {
             let (cpu, mem) =
                 tree.iter().filter_map(|&(q, _)| sys::cpu_mem(q)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
             let s = seen.get(&(pid, root.id, root.comm.clone())).and_then(|s| s.1.as_ref());
-            let tr = tracked.entry(key).or_insert_with(|| Tracked {
-                // jobs already running when nodoka starts are left as they are
-                job: Job { admitted: tick == 1, ..Job::new(kind, t) },
-                tree: vec![],
-                stoppable: vec![],
-                cpu_ns: cpu,
-                first_seen: t,
-                last_active: t,
-                mem: 0,
-                label: s.map(|s| s.label.clone()).unwrap_or_default(),
-                production: s.is_some_and(|s| s.production),
-                listener_checked: 0,
-                has_listener: false,
-                conns: HashSet::new(),
-                last_net: t,
-                snapshot: HashSet::new(),
-                watch: None,
-                noticed: State::Running,
-                used: 0,
-                sliced: false,
+            let tr = tracked.entry(key).or_insert_with(|| {
+                let label = s.map(|s| s.label.clone()).unwrap_or_default();
+                let place = kind.heavy().then(|| sys::cwd(pid)).flatten().map(|c| (c, label.clone()));
+                let expect = place.as_ref().and_then(|p| peaks.get(p)).copied().unwrap_or(0);
+                Tracked {
+                    // jobs already running when nodoka starts are left as they are
+                    job: Job { admitted: tick == 1, expect, ..Job::new(kind, t) },
+                    tree: vec![],
+                    stoppable: vec![],
+                    cpu_ns: cpu,
+                    first_seen: t,
+                    last_active: t,
+                    mem: 0,
+                    label,
+                    production: s.is_some_and(|s| s.production),
+                    listener_checked: 0,
+                    has_listener: false,
+                    conns: HashSet::new(),
+                    last_net: t,
+                    snapshot: HashSet::new(),
+                    watch: None,
+                    noticed: State::Running,
+                    used: 0,
+                    sliced: false,
+                    place,
+                    peak: 0,
+                }
             });
             (tr.mem, tr.tree, tr.stoppable) = (mem, tree, stoppable);
+            tr.peak = tr.peak.max(mem);
             let running = tr.job.state == State::Running;
             // Is it a server? Every second while it's new (it may bind its port a few seconds after
             // starting; a slow machine missed it at the first look), then now and then.
@@ -274,6 +294,11 @@ pub fn run(opts: Options) {
         let gone: Vec<Key> = tracked.keys().filter(|k| !roots_now.contains(k)).copied().collect();
         for k in gone {
             let tr = tracked.remove(&k).unwrap();
+            // remember what it needed, for the next run of the same command here (one that never
+            // got to run would teach a wrong, tiny number)
+            if let Some(place) = tr.place.filter(|_| tr.job.admitted && tr.peak > 0) {
+                peaks.insert(place, tr.peak);
+            }
             if tr.job.state != State::Running || tr.job.bg {
                 ledger_dirty = true;
                 for &(q, _) in tr.stoppable.iter().filter(|q| !opts.dry_run && alive.contains(q)) {
@@ -294,7 +319,12 @@ pub fn run(opts: Options) {
             fs::write(home.join("pressure"), level.to_string()).ok();
         }
         st.now = t;
-        st.avail = sys::avail_bytes();
+        st.avail = avail();
+        // what else fills memory, for `nodoka status` (it leaves the user's apps alone)
+        if tick % 10 == 1 {
+            let in_jobs: HashSet<i32> = tracked.values().flat_map(|tr| tr.tree.iter().map(|k| k.0)).collect();
+            apps = if st.level >= 2 { biggest_apps(&procs, &by_pid, &in_jobs) } else { vec![] };
+        }
         st.cpu_busy = sys::load1() > cores as f64;
         let keys: Vec<Key> = tracked.keys().copied().collect();
         let mut jobs: Vec<Job> = keys.iter().map(|k| tracked[k].job.clone()).collect();
@@ -424,6 +454,11 @@ pub fn run(opts: Options) {
                     &format!("{pid:>7}  leftover busy, no parent, low priority  {label}  (`kill {pid}` stops it)\n");
             }
         }
+        if !apps.is_empty() {
+            let list: Vec<String> = apps.iter().map(|(n, m)| format!("{n} {}", size(*m))).collect();
+            status +=
+                &format!("biggest apps (nodoka leaves these alone; closing one frees memory): {}\n", list.join(", "));
+        }
         write_status(&home, &mut last_status, &status);
         let slice: Vec<i32> = if opts.dry_run {
             vec![]
@@ -515,6 +550,30 @@ pub fn label(argv: &[String]) -> String {
     if s.chars().count() > 60 { s.chars().take(59).collect::<String>() + "…" } else { s }
 }
 
+fn size(b: u64) -> String {
+    if b >= 1 << 30 { format!("{:.1} GB", b as f64 / (1u64 << 30) as f64) } else { format!("{} MB", b >> 20) }
+}
+
+/// Memory per app, biggest first: each process counts toward its top ancestor (the one launchd or
+/// systemd started), so Firefox's tabs count as Firefox. Dev jobs nodoka tracks are left out.
+fn biggest_apps(procs: &[Proc], by_pid: &HashMap<i32, &Proc>, skip: &HashSet<i32>) -> Vec<(String, u64)> {
+    let mut sum: HashMap<&str, u64> = HashMap::new();
+    for p in procs.iter().filter(|p| !skip.contains(&p.pid)) {
+        let mut top = p;
+        for _ in 0..64 {
+            match by_pid.get(&top.ppid) {
+                Some(q) if q.pid > 1 && q.comm != "systemd" => top = q,
+                _ => break,
+            }
+        }
+        *sum.entry(&top.comm).or_default() += sys::cpu_mem(p.pid).map_or(0, |m| m.1);
+    }
+    let mut v: Vec<(String, u64)> = sum.into_iter().filter(|a| a.1 >= 256 << 20).map(|(n, m)| (n.into(), m)).collect();
+    v.sort_by_key(|a| std::cmp::Reverse(a.1));
+    v.truncate(4);
+    v
+}
+
 fn level_name(l: u32) -> &'static str {
     match l {
         1 => "normal",
@@ -525,6 +584,11 @@ fn level_name(l: u32) -> &'static str {
 
 fn why(j: &Job, st: &Sys) -> String {
     match j.state {
+        State::Queued if policy::short_of_memory(j, st.level, st.avail) => format!(
+            "it needed {} last time and {} is free; it starts when there's room",
+            size(j.expect),
+            size(st.avail)
+        ),
         State::Queued => "enough heavy jobs are running; it starts when one finishes".into(),
         State::PressurePaused => "memory is critically low".into(),
         State::IdlePaused => "idle; the next request or saved file wakes it".into(),
@@ -537,6 +601,12 @@ fn why(j: &Job, st: &Sys) -> String {
 /// One line in the terminal a job runs in, so a person watching knows why it stopped printing.
 fn notice(pid: i32, tr: &mut Tracked, st: &Sys) {
     let msg = match tr.job.state {
+        State::Queued if policy::short_of_memory(&tr.job, st.level, st.avail) => format!(
+            "[nodoka] `{}` is waiting for memory: it needed {} last time. It starts on its own within {} minutes. See `nodoka status`.",
+            tr.label,
+            size(tr.job.expect),
+            policy::MAX_PRESSURE_PAUSE_S / 60
+        ),
         State::Queued => format!(
             "[nodoka] `{}` is waiting for a free slot. It starts on its own within {}s. See `nodoka status`.",
             tr.label, st.max_wait_s
@@ -575,15 +645,12 @@ fn render(tracked: &HashMap<Key, Tracked>, st: &Sys, cores: usize) -> String {
         let state = match tr.job.state {
             State::Running if tr.job.bg => "running, low priority",
             State::Running => "running",
+            State::Queued if policy::short_of_memory(&tr.job, st.level, st.avail) => "waiting for memory",
             State::Queued => "waiting for a slot",
             State::PressurePaused => "paused: low memory",
             State::IdlePaused => "asleep: idle",
         };
-        let mem = if tr.mem >= 1 << 30 {
-            format!("{:.1} GB", tr.mem as f64 / (1u64 << 30) as f64)
-        } else {
-            format!("{} MB", tr.mem >> 20)
-        };
+        let mem = size(tr.mem);
         s += &format!("{pid:>7}  {:<8} {:<22} {mem:>7}  {}\n", tr.job.kind.name(), state, tr.label);
     }
     s

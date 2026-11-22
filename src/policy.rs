@@ -31,6 +31,8 @@ pub struct Job {
     pub bg: bool,
     /// Memory of the whole tree in bytes (Activity Monitor's "Memory", swapped-out part included).
     pub mem: u64,
+    /// Memory this command needed the last time it ran in this folder (0: not known yet).
+    pub expect: u64,
 }
 
 impl Job {
@@ -49,6 +51,7 @@ impl Job {
             state_since: now,
             bg: false,
             mem: 0,
+            expect: 0,
         }
     }
 }
@@ -106,8 +109,16 @@ pub fn shares_budget(j: &Job) -> bool {
     j.state == State::Running && !j.terminal && j.pausable && j.kind != Kind::Test
 }
 
+/// Memory is short and this job needed more last time than the system can hand out now.
+pub fn short_of_memory(j: &Job, level: u32, room: u64) -> bool {
+    level >= 2 && j.expect > room
+}
+
 pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     let now = sys.now;
+    let level = sys.level;
+    // memory not yet promised to a job started or resumed this tick
+    let mut room = sys.avail;
     let cap = sys.cap();
     let mut out = Vec::new();
     let counts = |j: &Job| j.kind.heavy() && j.state == State::Running && j.admitted && (j.active || j.age_s < 30);
@@ -129,27 +140,35 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         }
         // Test runs never wait: clocks keep running while a process is paused, and a real Vitest run
         // held at start failed 9 of 60 tests on their 5s timeouts. They still take a slot.
-        if !j.pausable || j.kind == Kind::Test || j.age_s > ADMIT_WINDOW_S || running < cap {
+        // A job that needed more memory last time than is free now waits before it starts, while it
+        // holds next to nothing: paused later, a 3.4 GB type check keeps all 3.4 GB.
+        let fits = !short_of_memory(j, level, room);
+        if !j.pausable || j.kind == Kind::Test || j.age_s > ADMIT_WINDOW_S || running < cap && fits {
             j.admitted = true;
             running += 1;
+            room = room.saturating_sub(j.expect);
         } else {
             set(j, State::Queued);
             out.push(Action::Pause(i));
         }
     }
 
-    // 2. queued jobs start first-in first-out; one that waited too long starts anyway
+    // 2. queued jobs start first-in first-out; one that waited too long starts anyway (one waiting
+    //    for memory gets as long as a job paused for memory)
     let mut queued: Vec<usize> = order.iter().copied().filter(|&i| jobs[i].state == State::Queued).collect();
     queued.sort_by_key(|&i| jobs[i].state_since);
     for i in queued {
         let j = &mut jobs[i];
-        let overdue = now.saturating_sub(j.state_since) >= sys.max_wait_s;
-        if running < cap || overdue {
+        let short = short_of_memory(j, level, room);
+        let overdue = now.saturating_sub(j.state_since) >= if short { MAX_PRESSURE_PAUSE_S } else { sys.max_wait_s };
+        let free = running < cap && !short;
+        if free || overdue {
             set(j, State::Running);
             j.admitted = true;
             running += 1;
+            room = room.saturating_sub(j.expect);
             out.push(Action::Resume(i));
-            if overdue && !j.bg && !j.terminal {
+            if !free && !j.bg && !j.terminal {
                 j.bg = true;
                 out.push(Action::Bg(i, true));
             }
@@ -179,7 +198,7 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         // what calmed memory, so it went critical again 3s after resuming (a lone 5 GB type check
         // flapped every 25s). Never held longer than MAX_PRESSURE_PAUSE_S.
         if let Some(&i) = paused.first() {
-            if calm && sys.avail >= jobs[i].mem || now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S {
+            if calm && room >= jobs[i].mem || now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S {
                 set(&mut jobs[i], State::Running);
                 out.push(Action::Resume(i));
                 sys.last_pressure_act = now;
@@ -314,6 +333,42 @@ mod tests {
         s.avail = 0;
         s.now = 106 + MAX_PRESSURE_PAUSE_S;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "never held for good");
+    }
+
+    #[test]
+    fn a_job_that_needed_more_memory_than_is_free_waits_before_it_starts() {
+        let mut tsc = job(Kind::Build, 0);
+        tsc.expect = 3 << 30; // a type check that took 3 GB last time here
+        let mut vitest = job(Kind::Test, 0);
+        vitest.expect = 3 << 30;
+        let mut jobs = vec![tsc.clone(), vitest, job(Kind::Build, 0)];
+        let mut s = sys(100, 2, 5);
+        s.avail = 1 << 30;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)], "tests never wait; unknown jobs start");
+        s.now = 100 + s.max_wait_s;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "waiting for memory outlasts the slot wait");
+        s.avail = 4 << 30;
+        s.now += 1;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "starts once there's room, at full priority");
+
+        // two waiting for the same room: one starts, the other keeps waiting, at most 10 minutes
+        let mut jobs = vec![tsc.clone(), tsc];
+        let mut s = sys(100, 2, 5);
+        s.avail = 1 << 30;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0), Action::Pause(1)]);
+        s.avail = 4 << 30;
+        s.now = 101;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)]);
+        s.avail = 1 << 30; // the first one holds it now
+        s.now = 102;
+        assert!(decide(&mut jobs, &mut s).is_empty());
+        s.now = 100 + MAX_PRESSURE_PAUSE_S;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1), Action::Bg(1, true)], "never held for good");
+
+        // memory isn't short: the record doesn't matter
+        let mut jobs = vec![job(Kind::Build, 0)];
+        jobs[0].expect = 9 << 30;
+        assert!(decide(&mut jobs, &mut sys(100, 1, 3)).is_empty());
     }
 
     #[test]

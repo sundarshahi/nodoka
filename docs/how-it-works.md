@@ -106,7 +106,14 @@ Things that make recognition hard, and how they are handled:
 - **Admission.** At most `heavy_jobs` builds, tests and installs run at once (default: one per 5 GB of
   memory, at most half the cores); at memory-pressure *warn* the limit is halved, rounding up. A build or
   install that starts when the slots are full is paused within its first second and resumed first-in,
-  first-out. Test runs never wait (see below) but take a slot. No job waits longer than `max_wait_seconds` (60): coding agents have command timeouts, and a
+  first-out. Test runs never wait (see below) but take a slot.
+- **Waiting for memory.** When a build, type check or install ends, nodoka remembers its peak memory
+  under its folder and command line (in memory only; a restart forgets). While pressure is *warn* or
+  worse, the next run of that command in that folder is held at start if it needed more than the
+  system can hand out now, and starts once there's room, oldest first, each start promising its
+  amount so two can't take the same room. Held at start it holds next to nothing; paused later by
+  the brake it would keep everything it had. It waits at most 10 minutes, like a job paused for
+  memory. At normal pressure the record is ignored: macOS and Linux make room by compressing. No job waits longer than `max_wait_seconds` (60): coding agents have command timeouts, and a
   job that times out gets retried, which adds load. Jobs already running when the helper starts are
   left as they are.
 - **Low-memory brake.** Only at *critical* pressure: on a busy 16 GB Mac, *warn* can be the normal state

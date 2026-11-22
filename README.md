@@ -20,6 +20,10 @@ that keeps that from happening:
   timeouts) but count toward the limit.
 - **Idle servers sleep.** A dev server nobody has used for 10 minutes is paused; the next request — or
   the next file you save in its project — wakes it in under a second, so hot reload keeps working.
+- **Big jobs wait for memory before they start.** nodoka remembers how much memory each build, type
+  check or install needed the last time it ran in that folder. While memory is short, the next run
+  waits until there's room (at most 10 minutes) instead of starting, growing and then being paused
+  still holding it all. Test runs never wait.
 - **A brake for low memory.** When memory gets critically low — or the machine keeps swapping to disk —
   busy builds are paused, newest first, and each resumes once there's free memory for all of it (at
   most 10 minutes later), so one huge build can't freeze the machine.
@@ -61,9 +65,12 @@ $ nodoka status
 memory pressure: warn   load: 7.9 on 10 cores   builds/tests/installs at once: 2
   59101  build    running                 887 MB  next-build (v16.4.5)
   59280  build    waiting for a slot        6 MB  cargo build -q
-  59487  build    waiting for a slot        6 MB  cargo build -q
+  59487  build    waiting for memory        6 MB  npm exec tsc --noEmit
   48810  dev      asleep: idle            212 MB  rails server -p 3000
+biggest apps (nodoka leaves these alone; closing one frees memory): firefox 7.5 GB, Code 6.1 GB
 ```
+
+While memory is short, the last line shows which apps hold the most of it.
 
 If something you started in a terminal has to wait, that terminal gets one line saying why:
 

@@ -19,6 +19,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   most half your cores (`agent_cpu_percent`), running in slices of each second past that. Test runs
   and anything started in a terminal are exempt.
 
+- Builds, type checks and installs wait for memory before they start: nodoka remembers how much
+  each needed last time in that folder, and while memory is short the next run waits (at most 10
+  minutes) until there's room, instead of growing and then being paused still holding it all.
+- `nodoka status` lists the apps holding the most memory while memory is short.
+
 ### Changed
 
 - The memory brake resumes a paused build only once there's free memory for all of it, not just after

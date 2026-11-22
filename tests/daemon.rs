@@ -19,12 +19,18 @@ struct Daemon {
 
 impl Daemon {
     fn start(scope: &str, config: &str) -> Daemon {
+        Daemon::start_env(scope, config, &[])
+    }
+
+    /// `env` pins what the daemon reads from the machine, e.g. NODOKA_PRESSURE or NODOKA_AVAIL_MB.
+    fn start_env(scope: &str, config: &str, env: &[(&str, &str)]) -> Daemon {
         let home = std::env::temp_dir().join(format!("nodoka-it-{scope}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
         // the CPU budget slices busy jobs; only the test about it turns it on (a later line wins)
         fs::write(home.join("config"), format!("agent_cpu_percent = 100\n{config}")).unwrap();
-        let child = spawn_daemon(&home, scope);
+        let mut child = spawn_cmd(&home, scope);
+        let child = child.envs(env.iter().copied()).spawn().unwrap();
         Daemon { home, scope: scope.into(), child }
     }
 
@@ -95,15 +101,18 @@ fn fakejob() -> PathBuf {
 }
 
 fn spawn_daemon(home: &Path, scope: &str) -> Child {
-    Command::new(BIN)
-        .args(["daemon", "--test", scope])
+    spawn_cmd(home, scope).spawn().unwrap()
+}
+
+fn spawn_cmd(home: &Path, scope: &str) -> Command {
+    let mut c = Command::new(BIN);
+    c.args(["daemon", "--test", scope])
         .env("NODOKA_HOME", home)
         .env("NODOKA_PRESSURE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap()
+        .stderr(Stdio::null());
+    c
 }
 
 struct Job(Child);
@@ -390,4 +399,45 @@ fn unknown_programs_are_never_touched() {
     std::thread::sleep(Duration::from_secs(5));
     assert!(!stopped(u.0.id() as i32));
     assert!(!d.status().contains(&u.0.id().to_string()));
+}
+
+#[test]
+fn a_type_check_that_needed_more_memory_than_is_free_waits_before_it_starts_next_time() {
+    // memory is short (warn) and 50 MB is free; the fake type check holds 200 MB
+    let d = Daemon::start_env("memwait", "", &[("NODOKA_PRESSURE", "2"), ("NODOKA_AVAIL_MB", "50")]);
+    let base = std::env::temp_dir().join(format!("nodoka-memwait-{}", std::process::id()));
+    let (here, there) = (base.join("here"), base.join("there"));
+    fs::create_dir_all(&here).unwrap();
+    fs::create_dir_all(&there).unwrap();
+    let tsc = ["node", "/app/node_modules/typescript/bin/tsc", "--noEmit"];
+    let mem_mb = |pid: u32| -> u64 {
+        let status = d.status();
+        let Some(line) = status.lines().find(|l| l.trim_start().starts_with(&format!("{pid} "))) else { return 0 };
+        let w: Vec<&str> = line.split_whitespace().collect();
+        w.windows(2).find(|p| p[1] == "MB" || p[1] == "GB").map_or(0, |p| {
+            let v: f64 = p[0].parse().unwrap_or(0.0);
+            (if p[1] == "GB" { v * 1024.0 } else { v }) as u64
+        })
+    };
+
+    // first run here: nothing to go on, so it runs; nodoka notes it needed ~200 MB
+    let first = Job(d.job_in(&here, &tsc, "hold:200"));
+    let pid = first.0.id();
+    assert!(eventually(15, || mem_mb(pid) >= 150), "the first run never showed its memory:\n{}", d.status());
+    assert!(!stopped(pid as i32), "a run with no record must not wait");
+    drop(first);
+    assert!(eventually(5, || mem_mb(pid) == 0 && !d.status().contains(&format!("{pid} "))));
+
+    // next run here: it waits before it starts, while it holds next to nothing
+    let second = Job(d.job_in(&here, &tsc, "hold:200"));
+    let pid2 = second.0.id() as i32;
+    assert!(eventually(8, || stopped(pid2) && d.status().contains("waiting for memory")), "{}", d.status());
+    assert!(d.log().contains("last time"), "{}", d.log());
+
+    // the same command in another folder has no record: it runs
+    let other = Job(d.job_in(&there, &tsc, "idle"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!stopped(other.0.id() as i32), "the record is per folder");
+    drop((second, other));
+    let _ = fs::remove_dir_all(&base);
 }
