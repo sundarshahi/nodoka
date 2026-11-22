@@ -20,11 +20,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
   and anything started in a terminal are exempt.
 
 - Builds, type checks and installs wait for memory before they start: nodoka remembers how much
-  each needed last time in that folder, and while memory is short the next run waits (at most 10
-  minutes) until there's room, instead of growing and then being paused still holding it all.
+  each needed last time in that folder, and while memory is short the next run waits (at most a
+  minute) until there's room, instead of starting and fighting your apps for memory.
 - `nodoka status` lists the apps holding the most memory while memory is short.
 
 ### Changed
+
+- At critical memory, busy builds now keep running in a slow lane (spare CPU and disk time only:
+  macOS background priority, Linux idle disk priority) instead of being paused, so they finish and
+  free their memory while your apps stay responsive. `memory_brake = pause` brings pausing back.
+  A job waiting for memory before it starts waits at most `max_wait_seconds`.
 
 - A build paused for memory for 10 minutes now runs to the end at low priority, one at a time, even
   while memory stays critical. Before, it could stay paused for hours, holding its memory while its

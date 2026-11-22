@@ -441,3 +441,40 @@ fn a_type_check_that_needed_more_memory_than_is_free_waits_before_it_starts_next
     drop((second, other));
     let _ = fs::remove_dir_all(&base);
 }
+
+/// Scheduling state that shows the slow lane: macOS's scheduler priority (31 normal, 4 background),
+/// Linux's disk-priority class (0 default, 3 idle).
+#[cfg(target_os = "macos")]
+fn lane(pid: i32) -> i32 {
+    let out = Command::new("ps").args(["-o", "pri=", "-p", &pid.to_string()]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(-1)
+}
+#[cfg(target_os = "macos")]
+const SLOW: i32 = 4;
+
+#[cfg(target_os = "linux")]
+fn lane(pid: i32) -> i32 {
+    (unsafe { libc::syscall(libc::SYS_ioprio_get, 1 as libc::c_long, pid as libc::c_long) } >> 13) as i32
+}
+#[cfg(target_os = "linux")]
+const SLOW: i32 = 3;
+
+#[test]
+fn critical_memory_puts_a_busy_build_in_the_slow_lane_without_pausing_it() {
+    let d = Daemon::start_env("slowlane", "", &[("NODOKA_PRESSURE", "4")]);
+    let build = Job(d.job(&["node", "/app/node_modules/next/dist/bin/next", "build"], "burn"));
+    let pid = build.0.id() as i32;
+    let worker = || children(pid).first().copied();
+    let slowed = eventually(15, || lane(pid) == SLOW && worker().is_some_and(|w| lane(w) == SLOW));
+    assert!(slowed, "not slowed: {} {:?}\n{}", lane(pid), worker().map(lane), d.log());
+    for _ in 0..6 {
+        assert!(!stopped(pid), "a build is never paused for memory by default");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(d.status().contains("running, slow lane"), "{}", d.status());
+    let ledger = fs::read_to_string(d.home.join("paused")).unwrap_or_default();
+    assert!(ledger.contains(&format!("{pid} ")), "not in the crash ledger: {ledger}");
+    // stopping the helper gives the build its full speed back
+    unsafe { libc::kill(d.child.id() as i32, libc::SIGTERM) };
+    assert!(eventually(5, || lane(pid) != SLOW), "still slow after the helper stopped");
+}

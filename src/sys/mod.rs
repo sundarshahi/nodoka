@@ -110,6 +110,26 @@ pub fn set_bg(pid: i32, on: bool) {
     unsafe { libc::setpriority(libc::PRIO_PROCESS as _, pid as libc::id_t, if on { 10 } else { 0 }) };
 }
 
+/// The slow lane, for a build while memory is critically low: it keeps running, but only on spare
+/// CPU and disk time, so your apps' swap-ins go first. macOS: background priority (efficiency cores,
+/// throttled disk). Linux: idle disk priority. Reversible.
+#[cfg(target_os = "macos")]
+pub fn set_slow(pid: i32, on: bool) {
+    unsafe {
+        libc::setpriority(libc::PRIO_DARWIN_PROCESS, pid as libc::id_t, if on { libc::PRIO_DARWIN_BG } else { 0 })
+    };
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_slow(pid: i32, on: bool) {
+    // per thread on Linux; class idle = 3, none = 0 (the default: follows nice)
+    let prio: libc::c_long = if on { 3 << 13 } else { 0 };
+    let tids = std::fs::read_dir(format!("/proc/{pid}/task")).into_iter().flatten().flatten();
+    for t in tids.filter_map(|e| e.file_name().to_str()?.parse::<libc::c_long>().ok()) {
+        unsafe { libc::syscall(libc::SYS_ioprio_set, 1 as libc::c_long, t, prio) };
+    }
+}
+
 pub fn signal(pid: i32, stop: bool) {
     unsafe { libc::kill(pid, if stop { libc::SIGSTOP } else { libc::SIGCONT }) };
 }

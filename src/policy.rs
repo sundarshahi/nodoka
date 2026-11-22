@@ -35,6 +35,8 @@ pub struct Job {
     pub expect: u64,
     /// Waited the longest a job is ever held for memory: it runs to the end and isn't paused again.
     pub turn: bool,
+    /// In the slow lane: runs on spare CPU and disk time while memory is critically low.
+    pub slow: bool,
 }
 
 impl Job {
@@ -55,6 +57,7 @@ impl Job {
             mem: 0,
             expect: 0,
             turn: false,
+            slow: false,
         }
     }
 }
@@ -72,6 +75,8 @@ pub struct Sys {
     pub last_pressure_act: u64,
     /// Memory the system can hand out without swapping, in bytes.
     pub avail: u64,
+    /// At critical memory, pause busy builds (opt-in) instead of moving them to the slow lane.
+    pub pause_for_memory: bool,
 }
 
 impl Sys {
@@ -89,6 +94,7 @@ pub enum Action {
     Pause(usize),
     Resume(usize),
     Bg(usize, bool),
+    Slow(usize, bool),
 }
 
 pub const ADMIT_WINDOW_S: u64 = 3;
@@ -163,7 +169,8 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     for i in queued {
         let j = &mut jobs[i];
         let short = short_of_memory(j, level, room);
-        let overdue = now.saturating_sub(j.state_since) >= if short { MAX_PRESSURE_PAUSE_S } else { sys.max_wait_s };
+        let long = short && sys.pause_for_memory;
+        let overdue = now.saturating_sub(j.state_since) >= if long { MAX_PRESSURE_PAUSE_S } else { sys.max_wait_s };
         let free = running < cap && !short;
         if free || overdue {
             set(j, State::Running);
@@ -187,8 +194,26 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     //    it runs to the end at low priority and isn't paused again, one such job at a time. Paused,
     //    it holds its memory for good and its agent waits forever: two type checks held 7 GB for 3
     //    hours, resumed every 10 minutes only to be paused again 5 seconds later.
+    //    By default nothing is paused for memory: a paused job keeps all its memory and its agent
+    //    waits. Busy builds move to the slow lane instead, newest first, one every 5 seconds; they
+    //    keep running and finish, and leave the slow lane one by one after 20 calm seconds.
     let since_act = now.saturating_sub(sys.last_pressure_act);
-    if since_act >= PRESSURE_STEP_S {
+    if !sys.pause_for_memory && since_act >= PRESSURE_STEP_S {
+        let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build;
+        let calm = sys.level < 4 && now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
+        let step = if sys.level >= 4 {
+            order.iter().rev().copied().find(|&i| busy(&jobs[i]) && !jobs[i].slow).map(|i| (i, true))
+        } else if calm {
+            order.iter().copied().find(|&i| jobs[i].slow).map(|i| (i, false))
+        } else {
+            None
+        };
+        if let Some((i, on)) = step {
+            jobs[i].slow = on;
+            out.push(Action::Slow(i, on));
+            sys.last_pressure_act = now;
+        }
+    } else if since_act >= PRESSURE_STEP_S {
         let mut paused: Vec<usize> =
             order.iter().copied().filter(|&i| jobs[i].state == State::PressurePaused).collect();
         paused.sort_by_key(|&i| jobs[i].state_since);
@@ -271,6 +296,7 @@ mod tests {
             max_wait_s: 60,
             last_pressure_act: 0,
             avail: 8 << 30,
+            pause_for_memory: false,
         }
     }
 
@@ -334,6 +360,7 @@ mod tests {
             vec![job(Kind::Build, 60), job(Kind::Build, 50), job(Kind::Test, 40), job(Kind::Install, 30), idle_watcher];
         jobs.iter_mut().for_each(|j| j.admitted = true);
         let mut s = sys(100, 4, 3);
+        s.pause_for_memory = true;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(1)], "newest busy build first");
         s.now = 102; // too soon for another step
         assert!(decide(&mut jobs, &mut s).is_empty());
@@ -360,6 +387,7 @@ mod tests {
         let mut jobs = vec![job(Kind::Build, 60), job(Kind::Build, 50)];
         jobs.iter_mut().for_each(|j| j.admitted = true);
         let mut s = sys(100, 4, 3);
+        s.pause_for_memory = true;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(1)]);
         s.now = 105;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
@@ -382,6 +410,7 @@ mod tests {
         vitest.expect = 3 << 30;
         let mut jobs = vec![tsc.clone(), vitest, job(Kind::Build, 0)];
         let mut s = sys(100, 2, 5);
+        s.pause_for_memory = true;
         s.avail = 1 << 30;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)], "tests never wait; unknown jobs start");
         s.now = 100 + s.max_wait_s;
@@ -391,8 +420,9 @@ mod tests {
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "starts once there's room, at full priority");
 
         // two waiting for the same room: one starts, the other keeps waiting, at most 10 minutes
-        let mut jobs = vec![tsc.clone(), tsc];
+        let mut jobs = vec![tsc.clone(), tsc.clone()];
         let mut s = sys(100, 2, 5);
+        s.pause_for_memory = true;
         s.avail = 1 << 30;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0), Action::Pause(1)]);
         s.avail = 4 << 30;
@@ -404,10 +434,45 @@ mod tests {
         s.now = 100 + MAX_PRESSURE_PAUSE_S;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1), Action::Bg(1, true)], "never held for good");
 
+        // by default it waits only as long as for a slot
+        let mut jobs = vec![tsc];
+        let mut s = sys(100, 2, 5);
+        s.avail = 1 << 30;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        s.now = 100 + s.max_wait_s;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0), Action::Bg(0, true)]);
+
         // memory isn't short: the record doesn't matter
         let mut jobs = vec![job(Kind::Build, 0)];
         jobs[0].expect = 9 << 30;
         assert!(decide(&mut jobs, &mut sys(100, 1, 3)).is_empty());
+    }
+
+    #[test]
+    fn critical_memory_moves_busy_builds_to_the_slow_lane_and_never_pauses_them() {
+        let mut idle_watcher = job(Kind::Build, 20);
+        idle_watcher.active = false;
+        let mut jobs = vec![job(Kind::Build, 60), job(Kind::Build, 50), job(Kind::Test, 40), idle_watcher];
+        jobs.iter_mut().for_each(|j| j.admitted = true);
+        let mut s = sys(100, 4, 3);
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Slow(1, true)], "newest busy build first");
+        s.now = 102;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "one step every 5 seconds");
+        s.now = 105;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Slow(0, true)], "the last build too");
+        for now in [110, 600, 5000] {
+            s.now = now;
+            assert!(decide(&mut jobs, &mut s).is_empty(), "tests and idle jobs stay; nothing is paused");
+        }
+        assert!(jobs.iter().all(|j| j.state == State::Running));
+        s.level = 2;
+        s.level_since = 5000;
+        s.now = 5010;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "after a calm period");
+        s.now = 5020;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Slow(0, false)]);
+        s.now = 5025;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Slow(1, false)]);
     }
 
     #[test]

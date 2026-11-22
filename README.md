@@ -22,12 +22,12 @@ that keeps that from happening:
   the next file you save in its project — wakes it in under a second, so hot reload keeps working.
 - **Big jobs wait for memory before they start.** nodoka remembers how much memory each build, type
   check or install needed the last time it ran in that folder. While memory is short, the next run
-  waits until there's room (at most 10 minutes) instead of starting, growing and then being paused
-  still holding it all. Test runs never wait.
-- **A brake for low memory.** When memory gets critically low — or the machine keeps swapping to disk —
-  busy builds are paused, newest first, and each resumes once there's free memory for all of it, so
-  one huge build can't freeze the machine. One that has waited 10 minutes runs to the end at low
-  priority (one at a time) so it finishes and gives its memory back.
+  waits for room (at most a minute) instead of starting, growing and fighting your apps for memory.
+  Test runs never wait.
+- **A slow lane for low memory.** When memory gets critically low — or the machine keeps swapping to
+  disk — busy builds keep running but only on spare CPU and disk time, so your editor and browser get
+  their memory back from disk first and stay responsive. Nothing is paused: the build finishes, which
+  frees its memory. `memory_brake = pause` pauses them instead.
 - **Agent work yields to you.** While every core is busy, builds, tests, headless browsers and dev
   servers that coding agents started get lower priority; ones you started in a terminal keep theirs.
 - **A CPU budget for agents.** Builds, installs and dev servers that agents started share at most half
@@ -167,6 +167,7 @@ idle_sleep_minutes = 10   # 0 turns idle sleep off
 max_wait_seconds = 60     # a waiting job starts anyway after this long
 leftover_busy_minutes = 10  # a busy process left with no parent gets lower priority after this long; 0 turns it off
 agent_cpu_percent = 50      # agents' builds, installs and servers share at most this much CPU; 100 turns it off
+memory_brake = slow         # at critical memory: slow lane (default) or `pause`
 
 # teach nodoka about your own tools (program names, comma-separated)
 dev = my-server

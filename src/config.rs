@@ -18,6 +18,8 @@ pub struct Config {
     /// Share of all cores that builds, installs and dev servers started without a terminal may use
     /// together; 100 turns the budget off.
     pub agent_cpu_percent: u64,
+    /// At critical memory: pause busy builds (true) or move them to the slow lane (false, default).
+    pub pause_for_memory: bool,
     pub custom: Custom,
     pub warnings: Vec<String>,
 }
@@ -46,6 +48,11 @@ pub const TEMPLATE: &str = "\
 # this much of your CPU, so the rest stays free for you and the machine runs cooler. Test runs and
 # anything you start in a terminal are never held back. 100 turns it off.
 # agent_cpu_percent = 50
+
+# When memory is critically low, busy builds keep running in a slow lane: spare CPU and disk time
+# only, so your apps stay responsive. `pause` stops them until there's room instead (frees the
+# machine faster, but a paused job keeps its memory and whoever started it waits).
+# memory_brake = slow
 
 # Teach nodoka about your own tools (program names, comma-separated):
 # dev = my-server, my-watcher
@@ -76,6 +83,7 @@ pub fn load(path: &Path) -> Config {
         max_wait_s: 60,
         leftover_busy_s: 600,
         agent_cpu_percent: 50,
+        pause_for_memory: false,
         custom: Custom::new(),
         warnings: vec![],
     };
@@ -100,6 +108,11 @@ pub fn load(path: &Path) -> Config {
             ("leftover_busy_minutes", Ok(v)) => c.leftover_busy_s = v * 60,
             ("leftover_busy_seconds", Ok(v)) => c.leftover_busy_s = *v,
             ("agent_cpu_percent", Ok(v)) => c.agent_cpu_percent = (*v).clamp(1, 100),
+            ("memory_brake", _) => match value {
+                "slow" => c.pause_for_memory = false,
+                "pause" => c.pause_for_memory = true,
+                _ => c.warnings.push(format!("config line {}: `memory_brake` is `slow` or `pause`", n + 1)),
+            },
             ("dev" | "build" | "test" | "install" | "ignore", _) => {
                 for tool in value.split(',').map(|t| t.trim().to_ascii_lowercase()).filter(|t| !t.is_empty()) {
                     c.custom.insert(tool, Kind::parse(key));

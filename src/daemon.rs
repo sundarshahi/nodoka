@@ -116,6 +116,7 @@ pub fn run(opts: Options) {
         max_wait_s: cfg.max_wait_s,
         last_pressure_act: 0,
         avail: 0,
+        pause_for_memory: cfg.pause_for_memory,
     };
     log(&format!(
         "started: {} heavy jobs at once, idle sleep {}, {} worker cap{}{}",
@@ -136,6 +137,7 @@ pub fn run(opts: Options) {
             cfg_mtime = mtime(&cfg_path);
             cfg.warnings.iter().for_each(|w| log(w));
             (st.base_cap, st.idle_s, st.max_wait_s) = (cfg.heavy_jobs, cfg.idle_sleep_s, cfg.max_wait_s);
+            st.pause_for_memory = cfg.pause_for_memory;
             seen.clear(); // custom rules may have changed
             log("settings reloaded");
         }
@@ -299,10 +301,11 @@ pub fn run(opts: Options) {
             if let Some(place) = tr.place.filter(|_| tr.job.admitted && tr.peak > 0) {
                 peaks.insert(place, tr.peak);
             }
-            if tr.job.state != State::Running || tr.job.bg {
+            if tr.job.state != State::Running || tr.job.bg || tr.job.slow {
                 ledger_dirty = true;
                 for &(q, _) in tr.stoppable.iter().filter(|q| !opts.dry_run && alive.contains(q)) {
                     sys::set_bg(q, false);
+                    sys::set_slow(q, false);
                     sys::signal(q, false);
                 }
             }
@@ -336,7 +339,7 @@ pub fn run(opts: Options) {
             write_ledger(&ledger, &tracked); // before any signal, so a crash can always be undone
         }
         for a in &actions {
-            let (Action::Pause(i) | Action::Resume(i) | Action::Bg(i, _)) = *a;
+            let (Action::Pause(i) | Action::Resume(i) | Action::Bg(i, _) | Action::Slow(i, _)) = *a;
             let tr = tracked.get_mut(&keys[i]).unwrap();
             if let Action::Pause(_) = a {
                 if tr.job.state == State::IdlePaused {
@@ -356,6 +359,8 @@ pub fn run(opts: Options) {
                 Action::Resume(_) => "resume",
                 Action::Bg(_, true) => "lower priority",
                 Action::Bg(_, false) => "normal priority",
+                Action::Slow(_, true) => "slow lane",
+                Action::Slow(_, false) => "full speed",
             };
             log(&format!("{what:<15} {} pid {} — {} ({})", tr.job.kind.name(), keys[i].0, tr.label, why(&tr.job, &st)));
             if opts.dry_run {
@@ -366,14 +371,18 @@ pub fn run(opts: Options) {
                     Action::Pause(_) => sys::signal(q, true),
                     Action::Resume(_) => sys::signal(q, false),
                     Action::Bg(_, on) => sys::set_bg(q, on),
+                    Action::Slow(_, on) => sys::set_slow(q, on),
                 }
             }
             if tr.job.terminal && tr.noticed != tr.job.state {
                 notice(keys[i].0, tr, &st);
             }
         }
-        // children forked into a paused tree since the last tick are paused too
+        // children forked into a paused tree since the last tick are paused too (and into a slow one, slowed)
         if !opts.dry_run {
+            for tr in tracked.values().filter(|tr| tr.job.slow) {
+                tr.stoppable.iter().for_each(|&(q, _)| sys::set_slow(q, true));
+            }
             for tr in tracked.values().filter(|tr| tr.job.state != State::Running) {
                 for &(q, _) in &tr.stoppable {
                     if by_pid.get(&q).is_some_and(|p| !p.stopped) {
@@ -592,6 +601,7 @@ fn why(j: &Job, st: &Sys) -> String {
         State::Queued => "enough heavy jobs are running; it starts when one finishes".into(),
         State::PressurePaused => "memory is critically low".into(),
         State::IdlePaused => "idle; the next request or saved file wakes it".into(),
+        State::Running if j.slow => "memory is critically low; it runs on spare CPU and disk time".into(),
         State::Running if j.bg && st.cpu_busy => "all cores are busy".into(),
         State::Running if j.bg => "waited the maximum time, started anyway".into(),
         State::Running => "ok".into(),
@@ -643,6 +653,7 @@ fn render(tracked: &HashMap<Key, Tracked>, st: &Sys, cores: usize) -> String {
     }
     for ((pid, _), tr) in rows {
         let state = match tr.job.state {
+            State::Running if tr.job.slow => "running, slow lane",
             State::Running if tr.job.bg => "running, low priority",
             State::Running => "running",
             State::Queued if policy::short_of_memory(&tr.job, st.level, st.avail) => "waiting for memory",
@@ -671,7 +682,7 @@ fn write_status(home: &Path, last: &mut String, s: &str) {
 fn write_ledger(path: &Path, tracked: &HashMap<Key, Tracked>) {
     let lines: String = tracked
         .values()
-        .filter(|tr| tr.job.state != State::Running || tr.job.bg || tr.sliced)
+        .filter(|tr| tr.job.state != State::Running || tr.job.bg || tr.job.slow || tr.sliced)
         .flat_map(|tr| tr.stoppable.iter().map(|(p, id)| format!("{p} {id}\n")))
         .collect();
     fs::write(path, lines).ok();
@@ -686,6 +697,7 @@ pub fn recover(path: &Path) {
         if let (Some(p), Some(id)) = (it.next(), it.next()) {
             if alive.contains(&(p as i32, id)) {
                 sys::set_bg(p as i32, false);
+                sys::set_slow(p as i32, false);
                 sys::signal(p as i32, false);
             }
         }

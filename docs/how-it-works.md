@@ -113,11 +113,21 @@ Things that make recognition hard, and how they are handled:
   system can hand out now, and starts once there's room, oldest first, each start promising its
   amount so two can't take the same room. Held at start it holds next to nothing; paused later by
   the brake it would keep everything it had. It waits at most 10 minutes, like a job paused for
-  memory. At normal pressure the record is ignored: macOS and Linux make room by compressing. No job waits longer than `max_wait_seconds` (60): coding agents have command timeouts, and a
+  memory (with `memory_brake = pause`; otherwise at most `max_wait_seconds`). At normal pressure the
+  record is ignored: macOS and Linux make room by compressing. No job waits longer than `max_wait_seconds` (60): coding agents have command timeouts, and a
   job that times out gets retried, which adds load. Jobs already running when the helper starts are
   left as they are.
-- **Low-memory brake.** Only at *critical* pressure: on a busy 16 GB Mac, *warn* can be the normal state
-  for hours, and acting on it would make jobs stutter. One job is paused every 5 seconds, newest first,
+- **Low-memory slow lane** (the default). Only at *critical* pressure: on a busy 16 GB Mac, *warn* can
+  be the normal state for hours. Every 5 seconds the newest busy build that isn't in it yet moves to the
+  slow lane: on macOS background priority (efficiency cores and throttled disk, so other apps'
+  swap-ins go first; a scheduler priority of 4 instead of 31), on Linux the idle disk-priority class.
+  New processes in the job join it. Nothing is paused: a paused job keeps every byte it holds and its
+  agent waits on it (two paused type checks once held 7 GB for 3 hours), while a slowed one finishes
+  and gives its memory back. After 20 calm seconds builds leave the lane one by one. Builds only:
+  tests would run into their timeouts and installs into their download timeouts (background priority
+  throttles the network too). Jobs waiting for memory before they start wait at most
+  `max_wait_seconds`.
+- **Low-memory brake** (`memory_brake = pause`). One job is paused every 5 seconds, newest first,
   busy builds only — a paused test fails its timeouts, a paused install would have its downloads time
   out, and pausing an idle job (a `webpack --watch` between rebuilds) stops nothing from growing. The
   last busy build is paused too: a lone 9 GB `next build` froze a 16 GB Mac. Paused jobs are resumed one
