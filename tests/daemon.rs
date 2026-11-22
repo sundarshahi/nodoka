@@ -461,7 +461,8 @@ const SLOW: i32 = 3;
 
 #[test]
 fn critical_memory_puts_a_busy_build_in_the_slow_lane_without_pausing_it() {
-    let d = Daemon::start_env("slowlane", "", &[("NODOKA_PRESSURE", "4")]);
+    // at critical memory a new build first waits for a slot (holding nothing); keep that wait short
+    let d = Daemon::start_env("slowlane", "max_wait_seconds = 1", &[("NODOKA_PRESSURE", "4")]);
     let build = Job(d.job(&["node", "/app/node_modules/next/dist/bin/next", "build"], "burn"));
     let pid = build.0.id() as i32;
     let worker = || children(pid).first().copied();
