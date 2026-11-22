@@ -20,6 +20,10 @@ pub struct Config {
     pub agent_cpu_percent: u64,
     /// At critical memory: pause busy builds (true) or move them to the slow lane (false, default).
     pub pause_for_memory: bool,
+    /// Folders holding git worktrees to clean when idle (empty: cleaning off).
+    pub clean_dirs: Vec<PathBuf>,
+    pub clean_caches_after_s: u64,
+    pub remove_worktrees_after_s: u64,
     pub custom: Custom,
     pub warnings: Vec<String>,
 }
@@ -54,6 +58,14 @@ pub const TEMPLATE: &str = "\
 # machine faster, but a paused job keeps its memory and whoever started it waits).
 # memory_brake = slow
 
+# Folders holding git worktrees (comma-separated). In a worktree idle this long — no git activity,
+# no program working in it — folders git ignores and a tool rebuilds (node_modules, .next, .turbo…)
+# are deleted. After `remove_worktrees_after_days` the worktree itself goes, but only if nothing
+# would be lost: no changes, its commit is on a remote, no other ignored files (.env). 0: never.
+# clean_dirs = ~/worktrees
+# clean_caches_after_hours = 24
+# remove_worktrees_after_days = 7
+
 # Teach nodoka about your own tools (program names, comma-separated):
 # dev = my-server, my-watcher
 # build = my-compiler
@@ -84,6 +96,9 @@ pub fn load(path: &Path) -> Config {
         leftover_busy_s: 600,
         agent_cpu_percent: 50,
         pause_for_memory: false,
+        clean_dirs: vec![],
+        clean_caches_after_s: 24 * 3600,
+        remove_worktrees_after_s: 7 * 86400,
         custom: Custom::new(),
         warnings: vec![],
     };
@@ -108,6 +123,17 @@ pub fn load(path: &Path) -> Config {
             ("leftover_busy_minutes", Ok(v)) => c.leftover_busy_s = v * 60,
             ("leftover_busy_seconds", Ok(v)) => c.leftover_busy_s = *v,
             ("agent_cpu_percent", Ok(v)) => c.agent_cpu_percent = (*v).clamp(1, 100),
+            ("clean_caches_after_hours", Ok(v)) => c.clean_caches_after_s = v * 3600,
+            ("remove_worktrees_after_days", Ok(v)) => c.remove_worktrees_after_s = v * 86400,
+            ("clean_dirs", _) => {
+                let home = std::env::var("HOME").unwrap_or_default();
+                c.clean_dirs = value
+                    .split(',')
+                    .map(|d| d.trim())
+                    .filter(|d| !d.is_empty())
+                    .map(|d| PathBuf::from(d.strip_prefix("~/").map_or(d.to_string(), |r| format!("{home}/{r}"))))
+                    .collect();
+            }
             ("memory_brake", _) => match value {
                 "slow" => c.pause_for_memory = false,
                 "pause" => c.pause_for_memory = true,
@@ -129,6 +155,8 @@ pub fn load(path: &Path) -> Config {
                         | "leftover_busy_minutes"
                         | "leftover_busy_seconds"
                         | "agent_cpu_percent"
+                        | "clean_caches_after_hours"
+                        | "remove_worktrees_after_days"
                 ) =>
             {
                 c.warnings.push(format!("config line {}: `{key}` needs a whole number", n + 1));

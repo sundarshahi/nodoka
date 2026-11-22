@@ -28,6 +28,11 @@ that keeps that from happening:
   disk — busy builds keep running but only on spare CPU and disk time, so your editor and browser get
   their memory back from disk first and stay responsive. Nothing is paused: the build finishes, which
   frees its memory. `memory_brake = pause` pauses them instead.
+- **Idle worktrees give their disk back.** Coding agents make a git worktree per task and install
+  1–2 GB of dependencies into each. List the folders that hold them in `clean_dirs`, and in a worktree
+  idle for a day nodoka deletes what an install or build recreates (`node_modules`, `.next`,
+  `.turbo`…, only if git ignores it). After a week the worktree itself goes, but only when nothing
+  would be lost: no changes, its commit is on a remote, no other ignored files such as `.env`.
 - **Agent work yields to you.** While every core is busy, builds, tests, headless browsers and dev
   servers that coding agents started get lower priority; ones you started in a terminal keep theirs.
 - **A CPU budget for agents.** Builds, installs and dev servers that agents started share at most half
@@ -168,6 +173,9 @@ max_wait_seconds = 60     # a waiting job starts anyway after this long
 leftover_busy_minutes = 10  # a busy process left with no parent gets lower priority after this long; 0 turns it off
 agent_cpu_percent = 50      # agents' builds, installs and servers share at most this much CPU; 100 turns it off
 memory_brake = slow         # at critical memory: slow lane (default) or `pause`
+clean_dirs = ~/worktrees    # folders of git worktrees to clean when idle (off when unset)
+clean_caches_after_hours = 24     # idle this long: delete node_modules, .next… (0: never)
+remove_worktrees_after_days = 7   # idle this long: remove the worktree if nothing is lost (0: never)
 
 # teach nodoka about your own tools (program names, comma-separated)
 dev = my-server

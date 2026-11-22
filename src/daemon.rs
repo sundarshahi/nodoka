@@ -126,6 +126,26 @@ pub fn run(opts: Options) {
         if opts.dry_run { ", dry run" } else { "" },
         opts.scope.as_ref().map(|s| format!(", test scope {s}")).unwrap_or_default()
     ));
+    // disk cleaning: its own thread, hourly (deleting a 1 GB node_modules takes seconds); it reads
+    // the settings each pass so edits apply without a restart
+    if opts.scope.is_none() {
+        let (path, dry_run) = (cfg_path.clone(), opts.dry_run);
+        std::thread::spawn(move || {
+            loop {
+                let c = config::load(&path);
+                if !c.clean_dirs.is_empty() {
+                    let rules = crate::clean::Rules {
+                        dirs: c.clean_dirs,
+                        caches_after_s: c.clean_caches_after_s,
+                        worktrees_after_s: c.remove_worktrees_after_s,
+                        dry_run,
+                    };
+                    crate::clean::pass(&rules, &crate::clean::in_use(), sys::now()).iter().for_each(|l| log(l));
+                }
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+        });
+    }
     let mut last_status = String::new();
     let mut tick = 0u64;
     let (mut duty, mut last_tick) = (1.0f64, Instant::now());

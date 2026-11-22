@@ -24,6 +24,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   minute) until there's room, instead of starting and fighting your apps for memory.
 - `nodoka status` lists the apps holding the most memory while memory is short.
 
+- Disk cleaning for agent worktrees (`clean_dirs`): in a worktree idle for a day, rebuildable
+  ignored folders (`node_modules`, `.next`, `.turbo`…) are deleted; after a week the worktree is
+  removed if nothing would be lost (no changes, commit on a remote, no other ignored files).
+
 ### Changed
 
 - At critical memory, busy builds now keep running in a slow lane (spare CPU and disk time only:
