@@ -28,7 +28,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   ignored folders (`node_modules`, `.next`, `.turbo`…) are deleted; after a week the worktree is
   removed if nothing would be lost (no changes, commit on a remote, no other ignored files).
 
+- Stuck test runs end: a test run an agent started that used no CPU for 30 minutes (Jest with an
+  open handle) is asked to exit (`stop_idle_tests_minutes`). Watch modes, headless browsers and runs
+  started in a terminal are never stopped.
+
 ### Changed
+
+- While the machine is freezing (swapping 100+ MB/s on macOS, PSI full 40%+ on Linux), the newest
+  busy build is paused even in the slow lane, until there's room for it.
 
 - At critical memory, busy builds now keep running in a slow lane (spare CPU and disk time only:
   macOS background priority, Linux idle disk priority) instead of being paused, so they finish and

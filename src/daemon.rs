@@ -20,6 +20,8 @@ struct Seen {
     kind: Kind,
     label: String,
     production: bool,
+    /// A headless browser: waits on its agent, never stopped for being idle.
+    browser: bool,
 }
 
 struct Tracked {
@@ -117,6 +119,8 @@ pub fn run(opts: Options) {
         last_pressure_act: 0,
         avail: 0,
         pause_for_memory: cfg.pause_for_memory,
+        freezing: false,
+        stop_idle_tests_s: cfg.stop_idle_tests_s,
     };
     log(&format!(
         "started: {} heavy jobs at once, idle sleep {}, {} worker cap{}{}",
@@ -158,6 +162,7 @@ pub fn run(opts: Options) {
             cfg.warnings.iter().for_each(|w| log(w));
             (st.base_cap, st.idle_s, st.max_wait_s) = (cfg.heavy_jobs, cfg.idle_sleep_s, cfg.max_wait_s);
             st.pause_for_memory = cfg.pause_for_memory;
+            st.stop_idle_tests_s = cfg.stop_idle_tests_s;
             seen.clear(); // custom rules may have changed
             log("settings reloaded");
         }
@@ -240,7 +245,12 @@ pub fn run(opts: Options) {
                 let expect = place.as_ref().and_then(|p| peaks.get(p)).copied().unwrap_or(0);
                 Tracked {
                     // jobs already running when nodoka starts are left as they are
-                    job: Job { admitted: tick == 1, expect, ..Job::new(kind, t) },
+                    job: Job {
+                        admitted: tick == 1,
+                        expect,
+                        runner: kind == Kind::Test && !s.is_some_and(|s| s.browser),
+                        ..Job::new(kind, t)
+                    },
                     tree: vec![],
                     stoppable: vec![],
                     cpu_ns: cpu,
@@ -343,6 +353,10 @@ pub fn run(opts: Options) {
         }
         st.now = t;
         st.avail = avail();
+        st.freezing = match opts.scope.as_ref().and_then(|_| std::env::var("NODOKA_FREEZING").ok()) {
+            Some(v) => v == "1",
+            None => sys::freezing(),
+        };
         // what else fills memory, for `nodoka status` (it leaves the user's apps alone)
         if tick % 10 == 1 {
             let in_jobs: HashSet<i32> = tracked.values().flat_map(|tr| tr.tree.iter().map(|k| k.0)).collect();
@@ -359,7 +373,7 @@ pub fn run(opts: Options) {
             write_ledger(&ledger, &tracked); // before any signal, so a crash can always be undone
         }
         for a in &actions {
-            let (Action::Pause(i) | Action::Resume(i) | Action::Bg(i, _) | Action::Slow(i, _)) = *a;
+            let (Action::Pause(i) | Action::Resume(i) | Action::Bg(i, _) | Action::Slow(i, _) | Action::Stop(i)) = *a;
             let tr = tracked.get_mut(&keys[i]).unwrap();
             if let Action::Pause(_) = a {
                 if tr.job.state == State::IdlePaused {
@@ -381,6 +395,7 @@ pub fn run(opts: Options) {
                 Action::Bg(_, false) => "normal priority",
                 Action::Slow(_, true) => "slow lane",
                 Action::Slow(_, false) => "full speed",
+                Action::Stop(_) => "stop",
             };
             log(&format!("{what:<15} {} pid {} — {} ({})", tr.job.kind.name(), keys[i].0, tr.label, why(&tr.job, &st)));
             if opts.dry_run {
@@ -392,6 +407,10 @@ pub fn run(opts: Options) {
                     Action::Resume(_) => sys::signal(q, false),
                     Action::Bg(_, on) => sys::set_bg(q, on),
                     Action::Slow(_, on) => sys::set_slow(q, on),
+                    Action::Stop(_) => {
+                        sys::signal(q, false);
+                        unsafe { libc::kill(q, libc::SIGTERM) };
+                    }
                 }
             }
             if tr.job.terminal && tr.noticed != tr.job.state {
@@ -559,7 +578,8 @@ fn look(pid: i32, cfg: &Config, scope: Option<&str>) -> Option<Seen> {
     ]
     .iter()
     .any(|(k, v)| var(k) == Some(v));
-    Some(Seen { kind, label: label(&argv), production })
+    let browser = argv.iter().any(|a| a.contains("headless"));
+    Some(Seen { kind, label: label(&argv), production, browser })
 }
 
 /// A short, readable command line for status output.
@@ -621,6 +641,10 @@ fn why(j: &Job, st: &Sys) -> String {
         State::Queued => "enough heavy jobs are running; it starts when one finishes".into(),
         State::PressurePaused => "memory is critically low".into(),
         State::IdlePaused => "idle; the next request or saved file wakes it".into(),
+        State::Running if j.ended => format!(
+            "a test run that used no CPU for {} min finished but never exited; asked it to exit",
+            st.stop_idle_tests_s / 60
+        ),
         State::Running if j.slow => "memory is critically low; it runs on spare CPU and disk time".into(),
         State::Running if j.bg && st.cpu_busy => "all cores are busy".into(),
         State::Running if j.bg => "waited the maximum time, started anyway".into(),

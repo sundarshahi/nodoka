@@ -26,8 +26,12 @@ that keeps that from happening:
   Test runs never wait.
 - **A slow lane for low memory.** When memory gets critically low — or the machine keeps swapping to
   disk — busy builds keep running but only on spare CPU and disk time, so your editor and browser get
-  their memory back from disk first and stay responsive. Nothing is paused: the build finishes, which
-  frees its memory. `memory_brake = pause` pauses them instead.
+  their memory back from disk first and stay responsive. The build finishes, which frees its memory.
+  Only if the machine is freezing (swapping 100+ MB/s) is the newest build paused until there's room
+  for it. `memory_brake = pause` pauses at critical memory instead.
+- **Stuck test runs end.** A test run an agent started that has used no CPU for 30 minutes finished
+  but never exited (Jest with an open handle), and only holds memory: nodoka asks it to exit. Watch
+  modes, headless browsers and runs you started in a terminal are never stopped.
 - **Idle worktrees give their disk back.** Coding agents make a git worktree per task and install
   1–2 GB of dependencies into each. List the folders that hold them in `clean_dirs`, and in a worktree
   idle for a day nodoka deletes what an install or build recreates (`node_modules`, `.next`,
@@ -40,7 +44,7 @@ that keeps that from happening:
   the machine runs cooler. Test runs are never sliced.
 
 You keep typing `npm run dev`, `bin/rails server` and `cargo build` exactly as before. Nothing is
-turned off and nothing is killed.
+turned off, and the only thing ever stopped is an agent's test run that has sat idle for 30 minutes.
 
 ## Install
 
@@ -173,6 +177,7 @@ max_wait_seconds = 60     # a waiting job starts anyway after this long
 leftover_busy_minutes = 10  # a busy process left with no parent gets lower priority after this long; 0 turns it off
 agent_cpu_percent = 50      # agents' builds, installs and servers share at most this much CPU; 100 turns it off
 memory_brake = slow         # at critical memory: slow lane (default) or `pause`
+stop_idle_tests_minutes = 30      # an agent's test run idle this long is asked to exit (0: never)
 clean_dirs = ~/worktrees    # folders of git worktrees to clean when idle (off when unset)
 clean_caches_after_hours = 24     # idle this long: delete node_modules, .next… (0: never)
 remove_worktrees_after_days = 7   # idle this long: remove the worktree if nothing is lost (0: never)
@@ -194,7 +199,9 @@ took 12 s instead of 7–9 s. The more jobs pile up, the bigger the saving.
 
 nodoka is designed to be safe to leave running:
 
-- **It never kills anything.** It only pauses (`SIGSTOP`), resumes (`SIGCONT`) and lowers priority.
+- **It kills nothing you're using.** It pauses (`SIGSTOP`), resumes (`SIGCONT`) and lowers priority.
+  The one exception: a test run an agent started that has used no CPU for 30 minutes gets a polite
+  `SIGTERM` (`stop_idle_tests_minutes = 0` turns that off).
 - **It only touches your own processes,** needs no root and makes no network connections.
 - **It leaves alone anything it doesn't recognise,** including databases, editors and GUI apps. The one
   exception is a leftover: a process whose parent is gone (a killed agent, an interrupted test run) that

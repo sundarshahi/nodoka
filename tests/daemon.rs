@@ -479,3 +479,25 @@ fn critical_memory_puts_a_busy_build_in_the_slow_lane_without_pausing_it() {
     unsafe { libc::kill(d.child.id() as i32, libc::SIGTERM) };
     assert!(eventually(5, || lane(pid) != SLOW), "still slow after the helper stopped");
 }
+
+#[test]
+fn an_agents_test_run_that_sits_idle_is_asked_to_exit_but_an_idle_browser_is_not() {
+    let d = Daemon::start("hungtest", "stop_idle_tests_seconds = 3");
+    let mut jest = Job(d.job(&["node", "/app/node_modules/.bin/jest", "--silent"], "idle"));
+    let mut browser = Job(d.job(&["/opt/chrome/chrome-headless-shell", "--headless", "--no-sandbox"], "idle"));
+    let exited = eventually(15, || jest.0.try_wait().ok().flatten().is_some());
+    assert!(exited, "the idle test run is still running:\n{}", d.log());
+    assert!(d.log().contains("stop "), "{}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(browser.0.try_wait().unwrap().is_none(), "the idle browser was stopped:\n{}", d.log());
+}
+
+#[test]
+fn a_freezing_machine_pauses_even_a_slowed_build() {
+    let env = [("NODOKA_PRESSURE", "4"), ("NODOKA_FREEZING", "1")];
+    let d = Daemon::start_env("freeze", "max_wait_seconds = 1", &env);
+    let build = Job(d.job(&["node", "/app/node_modules/next/dist/bin/next", "build"], "burn"));
+    let pid = build.0.id() as i32;
+    assert!(eventually(20, || stopped(pid)), "not paused:\n{}", d.log());
+    assert!(d.status().contains("paused: low memory"), "{}", d.status());
+}

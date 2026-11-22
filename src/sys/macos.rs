@@ -6,7 +6,7 @@ use std::mem::{size_of, zeroed};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 pub fn procs(uid: u32) -> Vec<Proc> {
@@ -134,7 +134,16 @@ pub fn sockets(pids: &[i32]) -> Vec<Sock> {
 /// swap-in rate counts too (Linux gets the same from PSI stall time).
 pub fn pressure() -> u32 {
     let kernel = sysctl_u64("kern.memorystatus_vm_pressure_level").map(|v| v as u32).unwrap_or(1);
-    kernel.max(thrash_level(swapin_rate()))
+    let rate = swapin_rate();
+    LAST_RATE.store(rate as u64, Ordering::Relaxed);
+    kernel.max(thrash_level(rate))
+}
+
+static LAST_RATE: AtomicU64 = AtomicU64::new(0);
+
+/// Swapping so hard the machine freezes (205 MB/s on a 16 GB Mac): as of the last `pressure()`.
+pub fn freezing() -> bool {
+    LAST_RATE.load(Ordering::Relaxed) >= 100
 }
 
 /// Swap-in MB/s, smoothed over ~10s. 0 on the first call (nothing to compare with yet).

@@ -127,6 +127,15 @@ Things that make recognition hard, and how they are handled:
   tests would run into their timeouts and installs into their download timeouts (background priority
   throttles the network too). Jobs waiting for memory before they start wait at most
   `max_wait_seconds`.
+  While the machine is *freezing* (macOS: swap-ins of 100 MB/s or more, smoothed over ~10 seconds;
+  Linux: PSI memory `full avg10` of 40% or more) the newest busy build is paused, slowed or not: a
+  slowed build still touches all its memory, and a 4 GB type check kept a 16 GB Mac swapping
+  205 MB/s. Paused builds follow the brake's rules below (room to resume, a turn after 10 minutes).
+- **Stuck test runs** (`stop_idle_tests_minutes`, 30). A test run started without a terminal that has
+  used no CPU (under ~2% of a core) for that long has finished but never exited — Jest with an open
+  handle — and only holds memory: it gets one SIGTERM. Watch modes count as dev servers, and headless
+  browsers (anything with `headless` on its command line) wait on their agent, so neither is stopped;
+  nor is a run started in a terminal. Four such Jest runs once held 2.9 GB for up to 78 minutes.
 - **Low-memory brake** (`memory_brake = pause`). One job is paused every 5 seconds, newest first,
   busy builds only — a paused test fails its timeouts, a paused install would have its downloads time
   out, and pausing an idle job (a `webpack --watch` between rebuilds) stops nothing from growing. The
@@ -222,7 +231,7 @@ Router, webpack, Angular, Next.js, Rails and Django woke 0.59–0.84 s after a s
   and system services (`/System`, `/usr/libexec`, `/usr/sbin`, `/Library`, anything inside an `.app`)
   run parentless by design and are skipped. Found the hard way: two busy children of a killed test job
   ran at full speed for 36 hours. Lowering priority keeps the machine responsive but doesn't stop the
-  heat, so stopping it is left to you; nodoka never kills.
+  heat, so stopping it is left to you: the only process nodoka ever asks to exit is a stuck test run.
 - **Crash safety.** Before any signal, the processes about to be paused or lowered are written to
   `~/.nodoka/paused`. On start, stop, `nodoka off` and `nodoka uninstall`, everything in that file
   is resumed. Processes are identified by pid *and* start time, so a reused pid is never touched.

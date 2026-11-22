@@ -22,6 +22,8 @@ pub struct Config {
     pub pause_for_memory: bool,
     /// Folders holding git worktrees to clean when idle (empty: cleaning off).
     pub clean_dirs: Vec<PathBuf>,
+    /// Stop an agent's test run that used no CPU this long; 0: never.
+    pub stop_idle_tests_s: u64,
     pub clean_caches_after_s: u64,
     pub remove_worktrees_after_s: u64,
     pub custom: Custom,
@@ -57,6 +59,11 @@ pub const TEMPLATE: &str = "\
 # only, so your apps stay responsive. `pause` stops them until there's room instead (frees the
 # machine faster, but a paused job keeps its memory and whoever started it waits).
 # memory_brake = slow
+
+# A test run started without a terminal (by an agent) that uses no CPU for this many minutes has
+# finished but never exited (Jest with an open handle); it only holds memory, so it is asked to
+# exit. Watch modes, headless browsers and runs you start in a terminal are never stopped. 0: never.
+# stop_idle_tests_minutes = 30
 
 # Folders holding git worktrees (comma-separated). In a worktree idle this long — no git activity,
 # no program working in it — folders git ignores and a tool rebuilds (node_modules, .next, .turbo…)
@@ -97,6 +104,7 @@ pub fn load(path: &Path) -> Config {
         agent_cpu_percent: 50,
         pause_for_memory: false,
         clean_dirs: vec![],
+        stop_idle_tests_s: 1800,
         clean_caches_after_s: 24 * 3600,
         remove_worktrees_after_s: 7 * 86400,
         custom: Custom::new(),
@@ -123,6 +131,8 @@ pub fn load(path: &Path) -> Config {
             ("leftover_busy_minutes", Ok(v)) => c.leftover_busy_s = v * 60,
             ("leftover_busy_seconds", Ok(v)) => c.leftover_busy_s = *v,
             ("agent_cpu_percent", Ok(v)) => c.agent_cpu_percent = (*v).clamp(1, 100),
+            ("stop_idle_tests_minutes", Ok(v)) => c.stop_idle_tests_s = v * 60,
+            ("stop_idle_tests_seconds", Ok(v)) => c.stop_idle_tests_s = *v,
             ("clean_caches_after_hours", Ok(v)) => c.clean_caches_after_s = v * 3600,
             ("remove_worktrees_after_days", Ok(v)) => c.remove_worktrees_after_s = v * 86400,
             ("clean_dirs", _) => {
@@ -155,6 +165,8 @@ pub fn load(path: &Path) -> Config {
                         | "leftover_busy_minutes"
                         | "leftover_busy_seconds"
                         | "agent_cpu_percent"
+                        | "stop_idle_tests_minutes"
+                        | "stop_idle_tests_seconds"
                         | "clean_caches_after_hours"
                         | "remove_worktrees_after_days"
                 ) =>

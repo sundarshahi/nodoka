@@ -37,6 +37,10 @@ pub struct Job {
     pub turn: bool,
     /// In the slow lane: runs on spare CPU and disk time while memory is critically low.
     pub slow: bool,
+    /// A one-shot test run (not a watcher, not a browser): stopped once it sits idle too long.
+    pub runner: bool,
+    /// Sent a stop signal; not sent again.
+    pub ended: bool,
 }
 
 impl Job {
@@ -58,6 +62,8 @@ impl Job {
             expect: 0,
             turn: false,
             slow: false,
+            runner: false,
+            ended: false,
         }
     }
 }
@@ -77,6 +83,10 @@ pub struct Sys {
     pub avail: u64,
     /// At critical memory, pause busy builds (opt-in) instead of moving them to the slow lane.
     pub pause_for_memory: bool,
+    /// Swapping so hard everything waits on the disk (the Mac freezes): even the slow lane pauses.
+    pub freezing: bool,
+    /// A test run that used no CPU this long finished but never exited: stop it. 0: never.
+    pub stop_idle_tests_s: u64,
 }
 
 impl Sys {
@@ -95,6 +105,8 @@ pub enum Action {
     Resume(usize),
     Bg(usize, bool),
     Slow(usize, bool),
+    /// Ask it to exit (SIGTERM).
+    Stop(usize),
 }
 
 pub const ADMIT_WINDOW_S: u64 = 3;
@@ -197,8 +209,12 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     //    By default nothing is paused for memory: a paused job keeps all its memory and its agent
     //    waits. Busy builds move to the slow lane instead, newest first, one every 5 seconds; they
     //    keep running and finish, and leave the slow lane one by one after 20 calm seconds.
+    //    Except while the machine is freezing (swapping 100+ MB/s): a slowed build still touches all
+    //    its memory, and a 4 GB type check kept a 16 GB Mac swapping 205 MB/s. Then it is paused, as
+    //    with `memory_brake = pause`, and resumed or given its turn by the same rules.
     let since_act = now.saturating_sub(sys.last_pressure_act);
-    if !sys.pause_for_memory && since_act >= PRESSURE_STEP_S {
+    let pausing = sys.pause_for_memory || sys.freezing || jobs.iter().any(|j| j.state == State::PressurePaused);
+    if !pausing && since_act >= PRESSURE_STEP_S {
         let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build;
         let calm = sys.level < 4 && now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
         let step = if sys.level >= 4 {
@@ -232,7 +248,7 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
                 out.push(Action::Bg(i, true));
             }
             sys.last_pressure_act = now;
-        } else if sys.level >= 4 {
+        } else if if sys.pause_for_memory { sys.level >= 4 } else { sys.freezing } {
             if let Some(i) = order.iter().rev().copied().find(|&i| busy(&jobs[i])) {
                 set(&mut jobs[i], State::PressurePaused);
                 out.push(Action::Pause(i));
@@ -242,7 +258,7 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
             // Resume only once there's room for all of it. Calm alone isn't enough: pausing the build
             // is what calmed memory, so it went critical again 3s after resuming (a lone 5 GB type
             // check flapped every 25s).
-            let calm = now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
+            let calm = sys.level < 4 && now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
             if calm && room >= jobs[i].mem {
                 set(&mut jobs[i], State::Running);
                 out.push(Action::Resume(i));
@@ -251,7 +267,19 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         }
     }
 
-    // 4. idle servers sleep; a waiting connection or request wakes them
+    // 4. a test run an agent started that used no CPU for `stop_idle_tests_s` finished but never
+    //    exited (Jest with an open handle): it only holds memory. Four held 2.9 GB for up to 78 minutes
+    //    while a Mac swapped 205 MB/s. Terminal runs are the user's to see and stop.
+    for &i in &order {
+        let j = &mut jobs[i];
+        let hung = j.runner && !j.terminal && j.state == State::Running && j.idle_for_s >= sys.stop_idle_tests_s;
+        if sys.stop_idle_tests_s > 0 && hung && !j.ended {
+            j.ended = true; // ponytail: SIGTERM once, no SIGKILL follow-up; add one if runs ignore it
+            out.push(Action::Stop(i));
+        }
+    }
+
+    // 5. idle servers sleep; a waiting connection or request wakes them
     for &i in &order {
         let j = &mut jobs[i];
         if j.state == State::Running && sys.idle_s > 0 && j.sleepable && j.pausable && j.idle_for_s >= sys.idle_s {
@@ -263,7 +291,7 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         }
     }
 
-    // 5. all cores busy → background jobs yield: nice 10, kept until the job ends (an ordinary user
+    // 6. all cores busy → background jobs yield: nice 10, kept until the job ends (an ordinary user
     //    can't raise priority back). Dev servers too: one an agent started and drives (a demo recorder
     //    held a Rails server at 100%) shouldn't outrank your apps. Never terminal jobs: someone is
     //    watching those.
@@ -297,6 +325,8 @@ mod tests {
             last_pressure_act: 0,
             avail: 8 << 30,
             pause_for_memory: false,
+            freezing: false,
+            stop_idle_tests_s: 1800,
         }
     }
 
@@ -473,6 +503,50 @@ mod tests {
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Slow(0, false)]);
         s.now = 5025;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Slow(1, false)]);
+    }
+
+    #[test]
+    fn freezing_pauses_a_slowed_build_until_there_is_room() {
+        let mut jobs = vec![job(Kind::Build, 60), job(Kind::Test, 50)];
+        jobs.iter_mut().for_each(|j| j.admitted = true);
+        let mut s = sys(100, 4, 3);
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Slow(0, true)], "critical: slow lane");
+        s.freezing = true;
+        s.now = 105;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)], "freezing: paused; tests never");
+        s.freezing = false; // swapping eased but memory is still critical: stays paused
+        s.now = 200;
+        assert!(decide(&mut jobs, &mut s).is_empty());
+        s.level = 2;
+        s.level_since = 200;
+        s.now = 225;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "calm and room: resumed");
+        s.now = 230;
+        assert_eq!(
+            decide(&mut jobs, &mut s),
+            vec![Action::Slow(0, false)],
+            "then the slow-lane rules: calm, full speed"
+        );
+    }
+
+    #[test]
+    fn a_test_run_idle_too_long_is_stopped_once_but_never_a_watcher_browser_or_terminal_run() {
+        let mut hung = job(Kind::Test, 4000);
+        (hung.runner, hung.idle_for_s) = (true, 1800);
+        let mut browser = hung.clone();
+        browser.runner = false; // a headless browser waits on its agent
+        let mut mine = hung.clone();
+        mine.terminal = true;
+        let mut busy = hung.clone();
+        busy.idle_for_s = 60;
+        let mut jobs = vec![hung, browser, mine, busy];
+        let mut s = sys(5000, 1, 4);
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(0)]);
+        s.now = 5001;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "sent once");
+        s.stop_idle_tests_s = 0;
+        jobs[3].idle_for_s = 99_999;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "0 turns it off");
     }
 
     #[test]

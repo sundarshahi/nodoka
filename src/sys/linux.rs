@@ -140,6 +140,15 @@ pub fn pressure() -> u32 {
     }
 }
 
+/// Every task stalled on memory most of the time: the machine freezes.
+pub fn freezing() -> bool {
+    let psi = fs::read_to_string("/proc/pressure/memory").unwrap_or_default();
+    psi.lines()
+        .find(|l| l.starts_with("full"))
+        .and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix("avg10=")?.parse::<f64>().ok()))
+        .is_some_and(|v| v >= 40.0)
+}
+
 fn meminfo() -> HashMap<String, u64> {
     let text = fs::read_to_string("/proc/meminfo").unwrap_or_default();
     text.lines()
