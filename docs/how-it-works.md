@@ -143,8 +143,9 @@ Things that make recognition hard, and how they are handled:
   own timers use under 1%. Sessions idle 24 hours (or the set limit) are listed in `nodoka status`.
   With the setting on, one idle that long gets one SIGTERM while memory is at *warn* or worse; it exits
   within a second and takes its helpers with it, and its chat is already saved. Sessions in a terminal
-  are never closed. Idle time counts from when nodoka first saw the session, so after a restart it
-  waits the full period again.
+  are never closed. A Claude Code session's idle time starts at its last chat write (its
+  `sessions/<pid>.json` names the chat file), so sessions open before nodoka started are judged
+  right away; for others it counts from when nodoka first saw them.
 - **Low-memory brake** (`memory_brake = pause`). One job is paused every 5 seconds, newest first,
   busy builds only — a paused test fails its timeouts, a paused install would have its downloads time
   out, and pausing an idle job (a `webpack --watch` between rebuilds) stops nothing from growing. The

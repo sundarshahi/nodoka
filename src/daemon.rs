@@ -107,7 +107,7 @@ pub fn run(opts: Options) {
     };
     let mut leftovers: HashMap<Key, Leftover> = HashMap::new();
     // agent sessions by process; None = not ours to judge (outside the test scope)
-    // ponytail: idle time counts from when nodoka first saw it, so a restart waits the full period again
+    // ponytail: a non-Claude session's idle time counts from when nodoka first saw it (a restart waits again)
     let mut sessions: HashMap<Key, Option<agents::Session>> = HashMap::new();
     // ponytail: in memory, so a restart forgets; save to a file if that turns out to matter
     let mut peaks: HashMap<(PathBuf, String), u64> = HashMap::new();
@@ -470,11 +470,13 @@ pub fn run(opts: Options) {
                 let (cpu, mem) =
                     tree.iter().filter_map(|&q| sys::cpu_mem(q)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
                 let entry = sessions.entry((p.pid, p.id)).or_insert_with(|| {
-                    let ours = opts.scope.as_deref().is_none_or(|scope| {
-                        sys::args_env(p.pid)
-                            .is_some_and(|(_, env)| env.iter().any(|e| e.strip_prefix("NODOKA_TEST=") == Some(scope)))
-                    });
-                    ours.then(|| agents::Session::new(cpu, tree.clone(), t, p.tty))
+                    let env = sys::args_env(p.pid).map(|(_, env)| env).unwrap_or_default();
+                    let ours = opts
+                        .scope
+                        .as_deref()
+                        .is_none_or(|scope| env.iter().any(|e| e.strip_prefix("NODOKA_TEST=") == Some(scope)));
+                    let last = agents::last_chat_write(p.pid, &env);
+                    ours.then(|| agents::Session::new(cpu, tree.clone(), t, p.tty, last))
                 });
                 let Some(s) = entry else { continue };
                 s.sample(cpu, tree, t);
