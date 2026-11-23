@@ -1,5 +1,6 @@
 //! The background loop: once a second, find dev work, decide, act, and write a status file.
 
+use crate::agents;
 use crate::classify::{self, Kind};
 use crate::config::{self, Config};
 use crate::policy::{self, Action, Job, State, Sys};
@@ -105,6 +106,9 @@ pub fn run(opts: Options) {
             .unwrap_or_else(sys::avail_bytes)
     };
     let mut leftovers: HashMap<Key, Leftover> = HashMap::new();
+    // agent sessions by process; None = not ours to judge (outside the test scope)
+    // ponytail: idle time counts from when nodoka first saw it, so a restart waits the full period again
+    let mut sessions: HashMap<Key, Option<agents::Session>> = HashMap::new();
     // ponytail: in memory, so a restart forgets; save to a file if that turns out to matter
     let mut peaks: HashMap<(PathBuf, String), u64> = HashMap::new();
     let mut apps: Vec<(String, u64)> = vec![];
@@ -222,12 +226,7 @@ pub fn run(opts: Options) {
             let root = by_pid[&pid];
             let key = (pid, root.id);
             roots_now.insert(key);
-            let mut tree = vec![pid];
-            let mut i = 0;
-            while i < tree.len() {
-                tree.extend(kids.get(&tree[i]).into_iter().flatten().copied());
-                i += 1;
-            }
+            let tree = descendants(pid, &kids);
             let protected = |q: i32| {
                 by_pid
                     .get(&q)
@@ -462,6 +461,40 @@ pub fn run(opts: Options) {
             }
         }
 
+        // Agent sessions left open: idle ones are listed, and closed while memory is short if that's on.
+        if tick % 5 == 0 {
+            sessions.retain(|k, _| alive.contains(k));
+            let is_agent = |p: &Proc| agents::NAMES.contains(&p.comm.as_str());
+            for p in procs.iter().filter(|p| is_agent(p)) {
+                let tree: HashSet<i32> = descendants(p.pid, &kids).into_iter().collect();
+                let (cpu, mem) =
+                    tree.iter().filter_map(|&q| sys::cpu_mem(q)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+                let entry = sessions.entry((p.pid, p.id)).or_insert_with(|| {
+                    let ours = opts.scope.as_deref().is_none_or(|scope| {
+                        sys::args_env(p.pid)
+                            .is_some_and(|(_, env)| env.iter().any(|e| e.strip_prefix("NODOKA_TEST=") == Some(scope)))
+                    });
+                    ours.then(|| agents::Session::new(cpu, tree.clone(), t, p.tty))
+                });
+                let Some(s) = entry else { continue };
+                s.sample(cpu, tree, t);
+                s.mem = mem;
+                if s.should_close(t, cfg.close_idle_agents_s, st.level) {
+                    s.asked = true;
+                    log(&format!(
+                        "close           agent session pid {} — {} (idle {}, holding {}; memory is short; its chat is saved)",
+                        p.pid,
+                        p.comm,
+                        span(s.idle_for(t)),
+                        size(mem)
+                    ));
+                    if !opts.dry_run {
+                        unsafe { libc::kill(p.pid, libc::SIGTERM) };
+                    }
+                }
+            }
+        }
+
         // CPU budget for agent work: measure what it used, then let it run only part of the next second.
         let dt = last_tick.elapsed().as_secs_f64().max(0.2);
         last_tick = Instant::now();
@@ -501,6 +534,29 @@ pub fn run(opts: Options) {
                 status +=
                     &format!("{pid:>7}  leftover busy, no parent, low priority  {label}  (`kill {pid}` stops it)\n");
             }
+        }
+        let list_after = if cfg.close_idle_agents_s > 0 { cfg.close_idle_agents_s } else { 86_400 };
+        let mut idle: Vec<(i32, &agents::Session)> = sessions
+            .iter()
+            .filter_map(|((pid, _), s)| Some((*pid, s.as_ref()?)))
+            .filter(|(_, s)| !s.asked && s.idle_for(t) >= list_after)
+            .collect();
+        if !idle.is_empty() {
+            idle.sort_by_key(|(_, s)| s.idle_since);
+            let held: u64 = idle.iter().map(|(_, s)| s.mem).sum();
+            let list: Vec<String> = idle.iter().map(|(pid, _)| pid.to_string()).collect();
+            status += &format!(
+                "agent sessions idle over {}: {} holding {} (pids {}); {}\n",
+                span(list_after),
+                idle.len(),
+                size(held),
+                list.join(" "),
+                if cfg.close_idle_agents_s > 0 {
+                    "closed while memory is short"
+                } else {
+                    "closing them frees it (`close_idle_agents_after_hours` lets nodoka do it)"
+                }
+            );
         }
         if !apps.is_empty() {
             let list: Vec<String> = apps.iter().map(|(n, m)| format!("{n} {}", size(*m))).collect();
@@ -551,6 +607,17 @@ fn leftover_label(pid: i32, scope: Option<&str>) -> Option<String> {
         return None;
     }
     Some(label(&argv))
+}
+
+/// `pid` and everything it started, at any depth.
+fn descendants(pid: i32, kids: &HashMap<i32, Vec<i32>>) -> Vec<i32> {
+    let mut tree = vec![pid];
+    let mut i = 0;
+    while i < tree.len() {
+        tree.extend(kids.get(&tree[i]).into_iter().flatten().copied());
+        i += 1;
+    }
+    tree
 }
 
 fn pids(keys: &[Key]) -> Vec<i32> {
@@ -621,6 +688,10 @@ fn biggest_apps(procs: &[Proc], by_pid: &HashMap<i32, &Proc>, skip: &HashSet<i32
     v.sort_by_key(|a| std::cmp::Reverse(a.1));
     v.truncate(4);
     v
+}
+
+fn span(s: u64) -> String {
+    if s >= 3600 { format!("{}h", s / 3600) } else { format!("{s}s") }
 }
 
 fn level_name(l: u32) -> &'static str {

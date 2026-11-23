@@ -178,6 +178,7 @@ leftover_busy_minutes = 10  # a busy process left with no parent gets lower prio
 agent_cpu_percent = 50      # agents' builds, installs and servers share at most this much CPU; 100 turns it off
 memory_brake = slow         # at critical memory: slow lane (default) or `pause`
 stop_idle_tests_minutes = 30      # an agent's test run idle this long is asked to exit (0: never)
+close_idle_agents_after_hours = 24  # close agent sessions (Claude Code, Codex) idle this long while memory is short (off when unset)
 clean_dirs = ~/worktrees    # folders of git worktrees to clean when idle (off when unset)
 clean_caches_after_hours = 24     # idle this long: delete node_modules, .next… (0: never)
 remove_worktrees_after_days = 7   # idle this long: remove the worktree if nothing is lost (0: never)
@@ -201,7 +202,9 @@ nodoka is designed to be safe to leave running:
 
 - **It kills nothing you're using.** It pauses (`SIGSTOP`), resumes (`SIGCONT`) and lowers priority.
   The one exception: a test run an agent started that has used no CPU for 30 minutes gets a polite
-  `SIGTERM` (`stop_idle_tests_minutes = 0` turns that off).
+  `SIGTERM` (`stop_idle_tests_minutes = 0` turns that off). If you set `close_idle_agents_after_hours`,
+  coding-agent sessions that did nothing for that long get the same `SIGTERM` while memory is short;
+  their chat is saved, so they can be resumed. Off by default.
 - **It only touches your own processes,** needs no root and makes no network connections.
 - **It leaves alone anything it doesn't recognise,** including databases, editors and GUI apps. The one
   exception is a leftover: a process whose parent is gone (a killed agent, an interrupted test run) that

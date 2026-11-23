@@ -32,6 +32,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   open handle) is asked to exit (`stop_idle_tests_minutes`). Watch modes, headless browsers and runs
   started in a terminal are never stopped.
 
+- Idle coding-agent sessions (Claude Code, Codex) are listed in `nodoka status` after 24 hours with
+  the memory they hold; `close_idle_agents_after_hours` asks them to exit while memory is short.
+
 ### Changed
 
 - While the machine is freezing (swapping 100+ MB/s on macOS, PSI full 40%+ on Linux), the newest
@@ -53,6 +56,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   busy, like builds and tests.
 
 ### Fixed
+
+- Bun-built tools, Claude Code's `claude` among them, refused to start in a shell with nodoka on:
+  Bun kept the quotes around the preload path in `BUN_OPTIONS` (`preload not found "\"…\""`).
 
 - Running `nodoka install` again on macOS (to upgrade) no longer leaves the helper off: starting the
   new one is retried until the old one has finished resuming what it paused.

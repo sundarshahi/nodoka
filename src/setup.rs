@@ -45,6 +45,13 @@ fn semi_space_mb() -> u64 {
 /// Python and other many-threaded programs. Linux only: macOS doesn't use glibc.
 const ARENAS: &str = if cfg!(target_os = "linux") { "MALLOC_ARENA_MAX" } else { "" };
 
+/// Bun keeps quotes as part of the path (`preload not found "\"…\""`: every Bun-built tool,
+/// Claude Code included, refused to start), so the path goes in bare; a path with a space can't.
+fn bun_line(pre: &Path, line: impl Fn(&str) -> String) -> String {
+    let pre = pre.display().to_string();
+    if pre.contains(char::is_whitespace) { String::new() } else { line(&format!("--preload={pre} --smol")) }
+}
+
 fn env_sh(dir: &Path, cpus: usize) -> String {
     let pre = dir.join("preload.cjs");
     let bin = dir.join("bin");
@@ -53,13 +60,16 @@ fn env_sh(dir: &Path, cpus: usize) -> String {
          if [ ! -e \"{off}\" ] && [ -z \"${{NODOKA_OFF:-}}\" ]; then\n\
          \x20 case \":$PATH:\" in *\":{bin}:\"*) ;; *) export PATH=\"{bin}:$PATH\" ;; esac\n\
          \x20 case \"${{NODE_OPTIONS:-}}\" in *nodoka/preload.cjs*) ;; *) export NODE_OPTIONS=\"--require=\\\"{pre}\\\" --max-semi-space-size={semi}${{NODE_OPTIONS:+ $NODE_OPTIONS}}\" ;; esac\n\
-         \x20 case \"${{BUN_OPTIONS:-}}\" in *nodoka/preload.cjs*) ;; *) export BUN_OPTIONS=\"--preload=\\\"{pre}\\\" --smol${{BUN_OPTIONS:+ $BUN_OPTIONS}}\" ;; esac\n\
+         {bun}\
          \x20 export NODOKA_CPUS=\"${{NODOKA_CPUS:-{cpus}}}\"\n",
         cfg = dir.join("config").display(),
         off = dir.join("off").display(),
         bin = bin.display(),
         pre = pre.display(),
         semi = semi_space_mb(),
+        bun = bun_line(&pre, |opts| format!(
+            "  case \"${{BUN_OPTIONS:-}}\" in *nodoka/preload.cjs*) ;; *) export BUN_OPTIONS=\"{opts}${{BUN_OPTIONS:+ $BUN_OPTIONS}}\" ;; esac\n"
+        )),
     );
     for (var, _) in CAPS {
         s += &format!("  export {var}=\"${{{var}:-$NODOKA_CPUS}}\"\n");
@@ -77,13 +87,16 @@ fn env_fish(dir: &Path, cpus: usize) -> String {
          if not test -e \"{off}\"; and test -z \"$NODOKA_OFF\"\n\
          \x20   contains -- \"{bin}\" $PATH; or set -gx PATH \"{bin}\" $PATH\n\
          \x20   string match -q '*nodoka/preload.cjs*' -- \"$NODE_OPTIONS\"; or set -gx NODE_OPTIONS (string trim -- \"--require=\\\"{pre}\\\" --max-semi-space-size={semi} $NODE_OPTIONS\")\n\
-         \x20   string match -q '*nodoka/preload.cjs*' -- \"$BUN_OPTIONS\"; or set -gx BUN_OPTIONS (string trim -- \"--preload=\\\"{pre}\\\" --smol $BUN_OPTIONS\")\n\
+         {bun}\
          \x20   set -q NODOKA_CPUS; or set -gx NODOKA_CPUS {cpus}\n",
         cfg = dir.join("config").display(),
         off = dir.join("off").display(),
         bin = dir.join("bin").display(),
         pre = pre.display(),
         semi = semi_space_mb(),
+        bun = bun_line(&pre, |opts| format!(
+            "    string match -q '*nodoka/preload.cjs*' -- \"$BUN_OPTIONS\"; or set -gx BUN_OPTIONS (string trim -- \"{opts} $BUN_OPTIONS\")\n"
+        )),
     );
     for (var, _) in CAPS {
         s += &format!("    set -q {var}; or set -gx {var} $NODOKA_CPUS\n");
@@ -394,5 +407,28 @@ mod tests {
         let fish = env_fish(Path::new("/h/.nodoka"), 4);
         assert!(fish.contains("set -q GOMAXPROCS; or set -gx GOMAXPROCS $NODOKA_CPUS"));
         assert!(fish.contains(" --max-semi-space-size=") && fish.contains(" --smol"));
+    }
+
+    #[test]
+    fn bun_gets_a_preload_path_it_can_open() {
+        let dir = std::env::temp_dir().join(format!("nodoka-env-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("preload.cjs"), "").unwrap();
+        fs::write(dir.join("env.sh"), env_sh(&dir, 4)).unwrap();
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(". \"$0/env.sh\"; printf %s \"$BUN_OPTIONS\"")
+            .arg(&dir)
+            .env_remove("BUN_OPTIONS")
+            .env_remove("NODOKA_OFF")
+            .output()
+            .unwrap();
+        let opts = String::from_utf8_lossy(&out.stdout).into_owned();
+        // Bun splits on spaces and keeps quotes: the value after --preload= must be the file itself
+        let path = opts.split(' ').find_map(|w| w.strip_prefix("--preload=")).unwrap_or_default();
+        assert!(Path::new(path).is_file(), "Bun would look for {path:?} (BUN_OPTIONS={opts:?})");
+        assert!(env_fish(&dir, 4).contains(&format!("--preload={} --smol", dir.join("preload.cjs").display())));
+        assert!(!env_sh(Path::new("/h/my home/.nodoka"), 4).contains("BUN_OPTIONS"));
+        fs::remove_dir_all(&dir).ok();
     }
 }

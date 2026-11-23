@@ -24,6 +24,8 @@ pub struct Config {
     pub clean_dirs: Vec<PathBuf>,
     /// Stop an agent's test run that used no CPU this long; 0: never.
     pub stop_idle_tests_s: u64,
+    /// Close an agent session idle this long while memory is short; 0: never (they're only listed).
+    pub close_idle_agents_s: u64,
     pub clean_caches_after_s: u64,
     pub remove_worktrees_after_s: u64,
     pub custom: Custom,
@@ -65,6 +67,12 @@ pub const TEMPLATE: &str = "\
 # exit. Watch modes, headless browsers and runs you start in a terminal are never stopped. 0: never.
 # stop_idle_tests_minutes = 30
 
+# Coding-agent sessions (Claude Code, Codex) that did nothing for this many hours are asked to exit
+# while memory is short: each holds 200–300 MB plus its helpers, and editors keep dozens open. The
+# chat is saved, so a closed session can be resumed. Sessions in a terminal are never closed.
+# Off by default; idle ones are listed in `nodoka status` either way. 0: never.
+# close_idle_agents_after_hours = 24
+
 # Folders holding git worktrees (comma-separated). In a worktree idle this long — no git activity,
 # no program working in it — folders git ignores and a tool rebuilds (node_modules, .next, .turbo…)
 # are deleted. After `remove_worktrees_after_days` the worktree itself goes, but only if nothing
@@ -105,6 +113,7 @@ pub fn load(path: &Path) -> Config {
         pause_for_memory: false,
         clean_dirs: vec![],
         stop_idle_tests_s: 1800,
+        close_idle_agents_s: 0,
         clean_caches_after_s: 24 * 3600,
         remove_worktrees_after_s: 7 * 86400,
         custom: Custom::new(),
@@ -133,6 +142,8 @@ pub fn load(path: &Path) -> Config {
             ("agent_cpu_percent", Ok(v)) => c.agent_cpu_percent = (*v).clamp(1, 100),
             ("stop_idle_tests_minutes", Ok(v)) => c.stop_idle_tests_s = v * 60,
             ("stop_idle_tests_seconds", Ok(v)) => c.stop_idle_tests_s = *v,
+            ("close_idle_agents_after_hours", Ok(v)) => c.close_idle_agents_s = v * 3600,
+            ("close_idle_agents_after_seconds", Ok(v)) => c.close_idle_agents_s = *v,
             ("clean_caches_after_hours", Ok(v)) => c.clean_caches_after_s = v * 3600,
             ("remove_worktrees_after_days", Ok(v)) => c.remove_worktrees_after_s = v * 86400,
             ("clean_dirs", _) => {
@@ -167,6 +178,8 @@ pub fn load(path: &Path) -> Config {
                         | "agent_cpu_percent"
                         | "stop_idle_tests_minutes"
                         | "stop_idle_tests_seconds"
+                        | "close_idle_agents_after_hours"
+                        | "close_idle_agents_after_seconds"
                         | "clean_caches_after_hours"
                         | "remove_worktrees_after_days"
                 ) =>

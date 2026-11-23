@@ -40,7 +40,18 @@ impl Daemon {
     }
 
     fn job_in(&self, dir: &Path, argv: &[&str], mode: &str) -> Child {
-        let mut c = Command::new(fakejob());
+        self.run(&fakejob(), dir, argv, mode)
+    }
+
+    /// A fake coding-agent session: the helper under the agent's program name (agents are found by it).
+    fn agent(&self, name: &str, mode: &str) -> Child {
+        let exe = self.home.join(name);
+        fs::copy(fakejob(), &exe).unwrap();
+        self.run(&exe, &std::env::temp_dir(), &[name], mode)
+    }
+
+    fn run(&self, exe: &Path, dir: &Path, argv: &[&str], mode: &str) -> Child {
+        let mut c = Command::new(exe);
         c.current_dir(dir).arg0(argv[0]).args(&argv[1..]).env("NODOKA_TEST", &self.scope).env("FAKEJOB", mode);
         c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         unsafe {
@@ -502,4 +513,17 @@ fn a_freezing_machine_pauses_even_a_slowed_build() {
     let paused = eventually(20, || d.status().contains("paused: low memory"));
     assert!(paused, "not paused for memory:\n{}\n{}", d.status(), d.log());
     assert!(stopped(pid));
+}
+
+#[test]
+fn an_agent_session_idle_too_long_is_closed_while_memory_is_short_but_a_working_one_is_not() {
+    let d = Daemon::start_env("agents", "close_idle_agents_after_seconds = 3", &[("NODOKA_PRESSURE", "2")]);
+    let mut idle = Job(d.agent("claude", "idle"));
+    let mut working = Job(d.agent("codex", "burn"));
+    let closed = eventually(20, || idle.0.try_wait().ok().flatten().is_some());
+    assert!(closed, "the idle session is still running:\n{}", d.log());
+    assert!(d.log().contains(&format!("agent session pid {}", idle.0.id())), "{}", d.log());
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(working.0.try_wait().unwrap().is_none(), "the working session was closed:\n{}", d.log());
+    assert!(!d.log().contains(&format!("agent session pid {}", working.0.id())), "{}", d.log());
 }

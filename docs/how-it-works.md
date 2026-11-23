@@ -136,6 +136,15 @@ Things that make recognition hard, and how they are handled:
   handle — and only holds memory: it gets one SIGTERM. Watch modes count as dev servers, and headless
   browsers (anything with `headless` on its command line) wait on their agent, so neither is stopped;
   nor is a run started in a terminal. Four such Jest runs once held 2.9 GB for up to 78 minutes.
+- **Idle agent sessions** (`close_idle_agents_after_hours`, off). Editors keep coding-agent sessions
+  (`claude`, `codex`) open for days: each holds 200–300 MB plus its MCP helpers, and 32 sessions idle
+  for over a day once held 8 GB of a 16 GB Mac. A session is working when it or anything it started
+  used more than 2% of a core over a minute, or it started a program (a tool call); an idle session's
+  own timers use under 1%. Sessions idle 24 hours (or the set limit) are listed in `nodoka status`.
+  With the setting on, one idle that long gets one SIGTERM while memory is at *warn* or worse; it exits
+  within a second and takes its helpers with it, and its chat is already saved. Sessions in a terminal
+  are never closed. Idle time counts from when nodoka first saw the session, so after a restart it
+  waits the full period again.
 - **Low-memory brake** (`memory_brake = pause`). One job is paused every 5 seconds, newest first,
   busy builds only — a paused test fails its timeouts, a paused install would have its downloads time
   out, and pausing an idle job (a `webpack --watch` between rebuilds) stops nothing from growing. The
