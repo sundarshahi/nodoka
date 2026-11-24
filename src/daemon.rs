@@ -109,8 +109,10 @@ pub fn run(opts: Options) {
     // agent sessions by process; None = not ours to judge (outside the test scope)
     // ponytail: a non-Claude session's idle time counts from when nodoka first saw it (a restart waits again)
     let mut sessions: HashMap<Key, Option<agents::Session>> = HashMap::new();
-    // ponytail: in memory, so a restart forgets; save to a file if that turns out to matter
-    let mut peaks: HashMap<(PathBuf, String), u64> = HashMap::new();
+    // kept in a file: a restart (every update, every login) forgot them, and a 3.9 GB type check
+    // started at critical memory as if it were new
+    let peaks_path = home.join("peaks");
+    let mut peaks = load_peaks(&peaks_path);
     let mut apps: Vec<(String, u64)> = vec![];
     let mut st = Sys {
         now: sys::now(),
@@ -125,6 +127,7 @@ pub fn run(opts: Options) {
         pause_for_memory: cfg.pause_for_memory,
         freezing: false,
         stop_idle_tests_s: cfg.stop_idle_tests_s,
+        last_critical: 0,
     };
     log(&format!(
         "started: {} heavy jobs at once, idle sleep {}, {} worker cap{}{}",
@@ -329,6 +332,7 @@ pub fn run(opts: Options) {
             // got to run would teach a wrong, tiny number)
             if let Some(place) = tr.place.filter(|_| tr.job.admitted && tr.peak > 0) {
                 peaks.insert(place, tr.peak);
+                save_peaks(&peaks_path, &peaks);
             }
             if tr.job.state != State::Running || tr.job.bg || tr.job.slow {
                 ledger_dirty = true;
@@ -825,6 +829,31 @@ pub fn recover(path: &Path) {
     fs::remove_file(path).ok();
 }
 
+/// One line per command and folder: `<bytes>\t<command>\t<folder>`.
+fn load_peaks(path: &Path) -> HashMap<(PathBuf, String), u64> {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(3, '\t');
+            let bytes = it.next()?.parse().ok()?;
+            let (label, dir) = (it.next()?, it.next()?);
+            Some(((PathBuf::from(dir), label.to_string()), bytes))
+        })
+        .collect()
+}
+
+fn save_peaks(path: &Path, peaks: &HashMap<(PathBuf, String), u64>) {
+    // ponytail: one line per command and folder ever seen; prune if it ever grows large
+    let text: String = peaks
+        .iter()
+        .map(|((dir, label), b)| format!("{b}\t{}\t{}\n", label.replace(['\t', '\n'], " "), dir.display()))
+        .collect();
+    let tmp = path.with_extension("tmp");
+    if fs::write(&tmp, text).is_ok() {
+        fs::rename(&tmp, path).ok();
+    }
+}
+
 fn mtime(p: &Path) -> Option<SystemTime> {
     fs::metadata(p).and_then(|m| m.modified()).ok()
 }
@@ -863,4 +892,27 @@ fn clock() -> String {
         tm.tm_min,
         tm.tm_sec
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_each_job_needed_survives_a_restart() {
+        let path = std::env::temp_dir().join(format!("nodoka-peaks-{}", std::process::id()));
+        let mut peaks = HashMap::new();
+        peaks.insert((PathBuf::from("/w/fe bulk"), "npm exec tsc --noEmit -p .".to_string()), 4_100_000_000);
+        peaks.insert((PathBuf::from("/w/app"), "next\tbuild".to_string()), 9 << 30);
+        save_peaks(&path, &peaks);
+        let back = load_peaks(&path);
+        fs::remove_file(&path).ok();
+        assert_eq!(back.get(&(PathBuf::from("/w/fe bulk"), "npm exec tsc --noEmit -p .".into())), Some(&4_100_000_000));
+        assert_eq!(
+            back.get(&(PathBuf::from("/w/app"), "next build".into())),
+            Some(&(9 << 30)),
+            "a tab can't split a line"
+        );
+        assert!(load_peaks(Path::new("/nonexistent/peaks")).is_empty());
+    }
 }

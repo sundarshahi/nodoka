@@ -126,9 +126,12 @@ Things that make recognition hard, and how they are handled:
   and gives its memory back. After 20 calm seconds builds leave the lane one by one. Builds only:
   tests would run into their timeouts and installs into their download timeouts (background priority
   throttles the network too). Jobs waiting for memory before they start wait at most
-  `max_wait_seconds` at *warn*; at *critical* up to 10 minutes, and while the machine is freezing they
-  don't start at all — a third 3.9 GB type check was about to start after a minute while a 16 GB Mac
-  swapped 240 MB/s. Waiting before the start holds next to nothing.
+  `max_wait_seconds` at *warn*. While memory is *critical*, or was under 20 seconds ago (it flips to
+  *warn* for a second or two), no new build or install starts for up to 10 minutes, known size or
+  not, and while the machine is freezing none starts at all — a third 3.9 GB type check was about to
+  start after a minute while a 16 GB Mac swapped 240 MB/s. Waiting before the start holds next to
+  nothing. What each command needed in each folder is kept in `~/.nodoka/peaks`, so a restart
+  doesn't make a known 4 GB type check look new.
   While the machine is *freezing* (macOS: swap-ins of 100 MB/s or more, smoothed over ~10 seconds;
   Linux: PSI memory `full avg10` of 40% or more) the newest busy build is paused, slowed or not: a
   slowed build still touches all its memory, and a 4 GB type check kept a 16 GB Mac swapping

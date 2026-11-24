@@ -87,6 +87,8 @@ pub struct Sys {
     pub freezing: bool,
     /// A test run that used no CPU this long finished but never exited: stop it. 0: never.
     pub stop_idle_tests_s: u64,
+    /// Last time memory was critical (0: never). Set by `decide`.
+    pub last_critical: u64,
 }
 
 impl Sys {
@@ -141,6 +143,12 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     // memory not yet promised to a job started or resumed this tick
     let mut room = sys.avail;
     let cap = sys.cap();
+    let calm = level < 4 && now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
+    if level >= 4 {
+        sys.last_critical = now;
+    }
+    // critical now or under 20 s ago: it flips to warn for a second or two
+    let tight = sys.last_critical > 0 && now.saturating_sub(sys.last_critical) < CALM_BEFORE_RESUME_S;
     let mut out = Vec::new();
     let counts = |j: &Job| j.kind.heavy() && j.state == State::Running && j.admitted && (j.active || j.age_s < 30);
     let mut running = jobs.iter().filter(|j| counts(j)).count();
@@ -181,13 +189,14 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     for i in queued {
         let j = &mut jobs[i];
         let short = short_of_memory(j, level, room);
-        // At critical memory a job that won't fit waits as long as a paused one, whatever the brake: a
-        // third 3.9 GB type check was about to start after a minute while a 16 GB Mac swapped 240 MB/s.
-        // While the machine freezes it doesn't start at all; it holds next to nothing while it waits.
-        let long = short && (sys.pause_for_memory || level >= 4);
+        // While memory is critical (or was, under 20 s ago: it flips to warn for a second or two) no
+        // new heavy job starts for up to 10 minutes, whatever the brake, known size or not: a third
+        // 3.9 GB type check was about to start after a minute while a 16 GB Mac swapped 240 MB/s.
+        // While the machine freezes nothing starts. Waiting before the start holds next to nothing.
+        let long = tight || short && sys.pause_for_memory;
         let wait = if long { MAX_PRESSURE_PAUSE_S } else { sys.max_wait_s };
-        let overdue = now.saturating_sub(j.state_since) >= wait && !(short && sys.freezing);
-        let free = running < cap && !short;
+        let overdue = now.saturating_sub(j.state_since) >= wait && !sys.freezing;
+        let free = running < cap && !short && !tight;
         if free || overdue {
             set(j, State::Running);
             j.admitted = true;
@@ -220,7 +229,6 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     let pausing = sys.pause_for_memory || sys.freezing || jobs.iter().any(|j| j.state == State::PressurePaused);
     if !pausing && since_act >= PRESSURE_STEP_S {
         let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build;
-        let calm = sys.level < 4 && now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
         let step = if sys.level >= 4 {
             order.iter().rev().copied().find(|&i| busy(&jobs[i]) && !jobs[i].slow).map(|i| (i, true))
         } else if calm {
@@ -273,7 +281,6 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
             // Resume only once there's room for all of it. Calm alone isn't enough: pausing the build
             // is what calmed memory, so it went critical again 3s after resuming (a lone 5 GB type
             // check flapped every 25s).
-            let calm = sys.level < 4 && now.saturating_sub(sys.level_since) >= CALM_BEFORE_RESUME_S;
             if calm && room >= jobs[i].mem {
                 set(&mut jobs[i], State::Running);
                 out.push(Action::Resume(i));
@@ -342,6 +349,7 @@ mod tests {
             pause_for_memory: false,
             freezing: false,
             stop_idle_tests_s: 1800,
+            last_critical: 0,
         }
     }
 
@@ -487,6 +495,24 @@ mod tests {
             vec![Action::Resume(0), Action::Bg(0, true), Action::Slow(0, true)],
             "then it runs, in the slow lane"
         );
+    }
+
+    #[test]
+    fn at_critical_memory_no_new_build_starts_for_ten_minutes_even_one_of_unknown_size() {
+        let mut jobs = vec![job(Kind::Build, 0)]; // never seen before: expect 0
+        let mut s = sys(100, 4, 3);
+        s.level_since = 90;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        for now in 101..=100 + s.max_wait_s {
+            s.now = now; // a tick a second, critical throughout
+            assert!(decide(&mut jobs, &mut s).is_empty(), "critical: not after a minute ({now})");
+        }
+        s.level = 2; // a blip to warn
+        s.level_since = s.now;
+        s.now += 2;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "nor on a 2 s blip to warn");
+        s.now += CALM_BEFORE_RESUME_S;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "calm: room for it");
     }
 
     #[test]

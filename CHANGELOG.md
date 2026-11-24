@@ -39,8 +39,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- At critical memory a job that needed more memory last time than is free waits up to 10 minutes
-  before it starts (whatever `memory_brake` is), and doesn't start at all while the machine freezes.
+- While memory is critical (or was under 20 seconds ago) no new build or install starts for up to
+  10 minutes, whatever `memory_brake` is and whether or not its size is known, and none starts while
+  the machine freezes. Before, one started after `max_wait_seconds`, or on a 1-second blip to warn.
+- What each command needed is kept in `~/.nodoka/peaks` across restarts; a restart made a known
+  3.9 GB type check look new, and it started at critical memory.
 - While the machine freezes, a build paused for 10 minutes is asked to exit instead of getting its
   turn; its agent can run it again. Builds started in a terminal keep waiting.
 
