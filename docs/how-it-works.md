@@ -136,9 +136,15 @@ Things that make recognition hard, and how they are handled:
   Linux: PSI memory `full avg10` of 40% or more) the newest busy build is paused, slowed or not: a
   slowed build still touches all its memory, and a 4 GB type check kept a 16 GB Mac swapping
   205 MB/s. Paused builds follow the brake's rules below (room to resume, a turn after 10 minutes),
-  except that no build gets its turn while the machine freezes: one paused that long is asked to exit
-  (SIGTERM) instead, one every 5 seconds, and its agent can run it again. Given its turn, a 3.8 GB type
-  check ran through a 240 MB/s freeze. Builds started in a terminal are never asked; they wait.
+  except that an agent's build held 10 minutes — paused, or waiting to start while memory stays
+  critical — is asked to exit (SIGTERM) instead of getting its turn, one every 5 seconds. Its agent
+  stopped waiting long ago (agents give up on a command after about 10 minutes) and can run it again;
+  paused, it keeps all its memory (three type checks held 12.6 GB), and given its turn a 3.8 GB type
+  check ran through a 240 MB/s freeze. Builds started in a terminal still get their turn when the
+  machine isn't freezing: someone is watching those.
+  Builds paused for memory stay paused across a restart of the helper (an update resumed three type
+  checks at once): the ledger marks them, and the next start takes them over with their pause time.
+  `nodoka off`, uninstalling and a test helper whose test run died still resume everything.
 - **Stuck test runs** (`stop_idle_tests_minutes`, 30). A test run started without a terminal that has
   used no CPU (under ~2% of a core) for that long has finished but never exited — Jest with an open
   handle — and only holds memory: it gets one SIGTERM. Watch modes count as dev servers, and headless

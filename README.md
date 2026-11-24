@@ -202,8 +202,10 @@ took 12 s instead of 7–9 s. The more jobs pile up, the bigger the saving.
 nodoka is designed to be safe to leave running:
 
 - **It kills nothing you're using.** It pauses (`SIGSTOP`), resumes (`SIGCONT`) and lowers priority.
-  The one exception: a test run an agent started that has used no CPU for 30 minutes gets a polite
-  `SIGTERM` (`stop_idle_tests_minutes = 0` turns that off). If you set `close_idle_agents_after_hours`,
+  The exceptions are things an agent started and stopped waiting for, each sent one polite `SIGTERM`:
+  a test run idle 30 minutes (`stop_idle_tests_minutes`) or still running after 30 minutes while
+  memory is critical (`stop_long_tests_minutes`), and a build held 10 minutes for memory. Its agent
+  can run it again. If you set `close_idle_agents_after_hours`,
   coding-agent sessions that did nothing for that long get the same `SIGTERM` while memory is short;
   their chat is saved, so they can be resumed. Off by default.
 - **It only touches your own processes,** needs no root and makes no network connections.
@@ -216,7 +218,8 @@ nodoka is designed to be safe to leave running:
 - **It never pauses the process an interactive shell is waiting on,** so your terminal never prints
   "suspended" or loses its prompt.
 - **It is crash-safe.** Before pausing anything it writes down what it is about to pause. If the helper
-  stops, crashes or is turned off, everything it paused is resumed.
+  is turned off or uninstalled, everything it paused is resumed. A restart (an update, a crash) resumes
+  everything too, except builds paused for low memory: the new helper takes those over.
 - **Every change is reversible.** `nodoka off` resumes everything at once; `nodoka uninstall` removes
   each line it added, exactly.
 

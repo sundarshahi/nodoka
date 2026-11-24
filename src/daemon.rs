@@ -79,7 +79,9 @@ pub fn run(opts: Options) {
     fs::create_dir_all(&home).expect("create the nodoka folder");
     rotate_log(&home);
     let ledger = home.join("paused");
-    recover(&ledger);
+    // builds paused for memory before a restart stay paused (an update resumed three type checks
+    // holding 12.6 GB at once); everything else in the ledger is resumed
+    let mut adopted = adopt(&ledger);
 
     let cfg_path = home.join("config");
     let mut cfg = config::load(&cfg_path);
@@ -243,6 +245,7 @@ pub fn run(opts: Options) {
             let (cpu, mem) =
                 tree.iter().filter_map(|&(q, _)| sys::cpu_mem(q)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
             let s = seen.get(&(pid, root.id, root.comm.clone())).and_then(|s| s.1.as_ref());
+            let paused_since = tree.iter().find_map(|k| adopted.get(k)).copied();
             let tr = tracked.entry(key).or_insert_with(|| {
                 let label = s.map(|s| s.label.clone()).unwrap_or_default();
                 let place = kind.heavy().then(|| sys::cwd(pid)).flatten().map(|c| (c, label.clone()));
@@ -251,6 +254,8 @@ pub fn run(opts: Options) {
                     // jobs already running when nodoka starts are left as they are
                     job: Job {
                         admitted: tick == 1,
+                        state: if paused_since.is_some() { State::PressurePaused } else { State::Running },
+                        state_since: paused_since.unwrap_or(t),
                         expect,
                         runner: kind == Kind::Test && !s.is_some_and(|s| s.browser),
                         ..Job::new(kind, t)
@@ -376,7 +381,15 @@ pub fn run(opts: Options) {
         for (k, j) in keys.iter().zip(jobs) {
             tracked.get_mut(k).unwrap().job = j;
         }
-        if !actions.is_empty() || ledger_dirty {
+        // adopted processes that turned out not to be a job (settings changed): never left stopped
+        if tick == 10 {
+            let in_jobs: HashSet<Key> = tracked.values().flat_map(|tr| tr.tree.iter().copied()).collect();
+            for (&(q, _), _) in adopted.iter().filter(|(k, _)| alive.contains(k) && !in_jobs.contains(k)) {
+                sys::signal(q, false);
+            }
+            adopted.clear();
+        }
+        if !actions.is_empty() || ledger_dirty || tick == 1 {
             write_ledger(&ledger, &tracked); // before any signal, so a crash can always be undone
         }
         for a in &actions {
@@ -588,8 +601,13 @@ pub fn run(opts: Options) {
             std::thread::sleep(Duration::from_secs_f64(duty));
         }
     }
-    log("stopping: resuming everything");
-    recover(&ledger);
+    if orphaned() {
+        log("stopping: resuming everything");
+        recover(&ledger);
+    } else {
+        log("stopping: resuming everything but builds paused for memory (the next start takes them over)");
+        hold(&ledger);
+    }
     fs::remove_file(home.join("pressure")).ok();
 }
 
@@ -722,8 +740,9 @@ fn why(j: &Job, st: &Sys) -> String {
         State::Queued => "enough heavy jobs are running; it starts when one finishes".into(),
         State::PressurePaused => "memory is critically low".into(),
         State::IdlePaused => "idle; the next request or saved file wakes it".into(),
-        State::Running if j.ended && j.kind == Kind::Build => {
-            "paused 10 minutes while the machine froze; asked to exit (its agent can run it again)".into()
+        State::Running if j.ended && j.kind != Kind::Test => {
+            "held 10 minutes for memory, long after its agent stopped waiting; asked to exit (it can be run again)"
+                .into()
         }
         State::Running if j.ended && st.stop_idle_tests_s > 0 && j.idle_for_s >= st.stop_idle_tests_s => format!(
             "a test run that used no CPU for {} min finished but never exited; asked it to exit",
@@ -811,28 +830,77 @@ fn write_status(home: &Path, last: &mut String, s: &str) {
     }
 }
 
+/// One line per process nodoka changed: `<pid> <start>`, plus ` mem <since>` for a build paused
+/// for memory (kept paused across a restart).
 fn write_ledger(path: &Path, tracked: &HashMap<Key, Tracked>) {
     let lines: String = tracked
         .values()
         .filter(|tr| tr.job.state != State::Running || tr.job.bg || tr.job.slow || tr.sliced)
-        .flat_map(|tr| tr.stoppable.iter().map(|(p, id)| format!("{p} {id}\n")))
+        .flat_map(|tr| {
+            let mem = tr.job.state == State::PressurePaused;
+            let tag = if mem { format!(" mem {}", tr.job.state_since) } else { String::new() };
+            tr.stoppable.iter().map(move |(p, id)| format!("{p} {id}{tag}\n"))
+        })
         .collect();
     fs::write(path, lines).ok();
 }
 
+fn ledger_lines(path: &Path) -> Vec<(Key, Option<u64>)> {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let w: Vec<&str> = l.split(' ').collect();
+            let key = (w.first()?.parse().ok()?, w.get(1)?.parse().ok()?);
+            let since = (w.get(2) == Some(&"mem")).then(|| w.get(3)?.parse().ok()).flatten();
+            Some((key, since))
+        })
+        .collect()
+}
+
+fn undo(q: i32) {
+    sys::set_bg(q, false);
+    sys::set_slow(q, false);
+    sys::signal(q, false);
+}
+
+/// At start: resume everything in the ledger except live builds paused for memory, returned with
+/// when they were paused. The file stays until the first tick rewrites it (a crash before then
+/// loses nothing).
+fn adopt(path: &Path) -> HashMap<Key, u64> {
+    let alive: HashSet<Key> = sys::procs(sys::uid()).iter().map(|p| (p.pid, p.id)).collect();
+    let mut kept = HashMap::new();
+    for (k, since) in ledger_lines(path).into_iter().filter(|(k, _)| alive.contains(k)) {
+        match since {
+            Some(s) => _ = kept.insert(k, s),
+            None => undo(k.0),
+        }
+    }
+    kept
+}
+
+/// On a normal stop: resume everything except builds paused for memory, which stay in the ledger
+/// for the next start. `nodoka off`, uninstall and a crash-restart still resume or adopt them.
+fn hold(path: &Path) {
+    let alive: HashSet<Key> = sys::procs(sys::uid()).iter().map(|p| (p.pid, p.id)).collect();
+    let mut keep = String::new();
+    for (k, since) in ledger_lines(path).into_iter().filter(|(k, _)| alive.contains(k)) {
+        match since {
+            Some(s) => keep += &format!("{} {} mem {s}\n", k.0, k.1),
+            None => undo(k.0),
+        }
+    }
+    if keep.is_empty() {
+        fs::remove_file(path).ok();
+    } else {
+        fs::write(path, keep).ok();
+    }
+}
+
 /// Resume and restore priority for everything listed in the ledger (crash-safe undo).
 pub fn recover(path: &Path) {
-    let Ok(text) = fs::read_to_string(path) else { return };
     let alive: HashSet<Key> = sys::procs(sys::uid()).iter().map(|p| (p.pid, p.id)).collect();
-    for line in text.lines() {
-        let mut it = line.split(' ').filter_map(|x| x.parse::<u64>().ok());
-        if let (Some(p), Some(id)) = (it.next(), it.next()) {
-            if alive.contains(&(p as i32, id)) {
-                sys::set_bg(p as i32, false);
-                sys::set_slow(p as i32, false);
-                sys::signal(p as i32, false);
-            }
-        }
+    for (k, _) in ledger_lines(path).into_iter().filter(|(k, _)| alive.contains(k)) {
+        undo(k.0);
     }
     fs::remove_file(path).ok();
 }

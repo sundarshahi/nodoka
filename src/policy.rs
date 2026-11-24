@@ -199,6 +199,14 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         let wait = if long { MAX_PRESSURE_PAUSE_S } else { sys.max_wait_s };
         let overdue = now.saturating_sub(j.state_since) >= wait && !sys.freezing;
         let free = running < cap && !short && !tight;
+        if overdue && tight && !j.terminal {
+            // its agent stopped waiting long ago (after about 10 minutes); started now it would only
+            // add to a machine that's short of memory. Asked to exit; it can be run again.
+            set(j, State::Running);
+            j.ended = true;
+            out.push(Action::Stop(i));
+            continue;
+        }
         if free || overdue {
             set(j, State::Running);
             j.admitted = true;
@@ -230,7 +238,7 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     let since_act = now.saturating_sub(sys.last_pressure_act);
     let pausing = sys.pause_for_memory || sys.freezing || jobs.iter().any(|j| j.state == State::PressurePaused);
     if !pausing && since_act >= PRESSURE_STEP_S {
-        let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build;
+        let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build && !j.ended;
         let step = if sys.level >= 4 {
             order.iter().rev().copied().find(|&i| busy(&jobs[i]) && !jobs[i].slow).map(|i| (i, true))
         } else if calm {
@@ -252,13 +260,16 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         let busy = |j: &Job| {
             j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build && !j.turn && !j.ended
         };
-        let overdue = oldest.filter(|&i| now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S);
-        if let Some(i) = overdue.filter(|&i| sys.freezing && !jobs[i].terminal) {
-            // Its turn would add a running build to a freezing machine (a 3.8 GB type check did), and
-            // held, it keeps its memory and its agent waits on it: it's asked to exit; its agent can
-            // run it again. One every step, so each one's memory shows before the next goes.
-            // running again: the daemon re-pauses anything in a paused tree each tick, and `npm exec`
-            // re-paused while passing the signal on to `tsc` would hang
+        let held_long = |i: &usize| now.saturating_sub(jobs[*i].state_since) >= MAX_PRESSURE_PAUSE_S;
+        let agents = paused.iter().copied().find(|i| held_long(i) && !jobs[*i].terminal);
+        let overdue = oldest.filter(held_long);
+        if let Some(i) = agents {
+            // An agent's build held 10 minutes: its agent stopped waiting long ago (after about 10
+            // minutes), paused it keeps all its memory (three type checks held 12.6 GB), and its turn
+            // would add a running build to a machine short of memory (a 3.8 GB one ran through a
+            // 240 MB/s freeze). It's asked to exit; it can be run again. One every step, so each
+            // one's memory shows before the next goes. Running again: the daemon re-pauses anything
+            // in a paused tree each tick, and `npm exec` re-paused while passing the signal on would hang.
             set(&mut jobs[i], State::Running);
             jobs[i].ended = true;
             out.push(Action::Stop(i));
@@ -439,31 +450,31 @@ mod tests {
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1)]);
         s.avail = 0;
         s.now = 106 + MAX_PRESSURE_PAUSE_S;
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0), Action::Bg(0, true)], "never held for good");
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(0)], "never held for good: its agent stopped waiting");
     }
 
     #[test]
-    fn a_build_held_the_longest_runs_to_the_end_even_while_memory_stays_critical() {
+    fn a_build_started_in_a_terminal_held_the_longest_runs_to_the_end_even_while_memory_stays_critical() {
         let mut jobs = vec![job(Kind::Build, 60), job(Kind::Build, 50)];
-        jobs.iter_mut().for_each(|j| j.admitted = true);
+        jobs.iter_mut().for_each(|j| (j.admitted, j.terminal) = (true, true)); // someone is watching
         let mut s = sys(100, 4, 3);
         s.pause_for_memory = true;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(1)]);
         s.now = 105;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
         s.now = 100 + MAX_PRESSURE_PAUSE_S; // still critical
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1), Action::Bg(1, true)], "its turn");
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1)], "its turn (never lowered: a terminal job)");
         for now in [705, 710, 800, 2000] {
             s.now = now;
             assert!(decide(&mut jobs, &mut s).is_empty(), "not paused again, and the next waits its turn");
         }
         jobs.remove(1); // it finished
         s.now = 2005;
-        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0), Action::Bg(0, true)], "then the next");
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "then the next");
     }
 
     #[test]
-    fn a_build_held_ten_minutes_while_the_machine_freezes_is_asked_to_exit_not_given_a_turn() {
+    fn an_agents_build_held_ten_minutes_is_asked_to_exit_not_given_a_turn() {
         let mut jobs = vec![job(Kind::Build, 60), job(Kind::Build, 50)];
         jobs.iter_mut().for_each(|j| j.admitted = true);
         jobs[0].terminal = true;
@@ -480,6 +491,18 @@ mod tests {
         s.freezing = false; // critical, no longer freezing: the terminal build gets its turn
         s.now += PRESSURE_STEP_S;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)]);
+
+        // not freezing at all, just critical: same for an agent's build
+        let mut jobs = vec![job(Kind::Build, 60)];
+        jobs[0].admitted = true;
+        let mut s = sys(100, 4, 3);
+        s.freezing = true;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        s.freezing = false;
+        s.now = 100 + MAX_PRESSURE_PAUSE_S;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(0)]);
+        s.now += PRESSURE_STEP_S;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "nor slowed while it exits");
     }
 
     #[test]
@@ -497,11 +520,7 @@ mod tests {
         assert!(decide(&mut jobs, &mut s).is_empty(), "never into a freezing machine");
         s.freezing = false;
         s.now += 1;
-        assert_eq!(
-            decide(&mut jobs, &mut s),
-            vec![Action::Resume(0), Action::Bg(0, true), Action::Slow(0, true)],
-            "then it runs, in the slow lane"
-        );
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(0)], "an agent's, still critical: asked to exit");
     }
 
     #[test]

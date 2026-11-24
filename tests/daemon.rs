@@ -72,6 +72,13 @@ fn fake(scope: &str, exe: &Path, dir: &Path, argv: &[&str], mode: &str) -> Child
 }
 
 impl Daemon {
+    /// Stop it the normal way (SIGTERM, like an update) and start it again with the same home.
+    fn restart_env(&mut self, env: &[(&str, &str)]) {
+        unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
+        let _ = self.child.wait();
+        self.child = spawn_cmd(&self.home, &self.scope).envs(env.iter().copied()).spawn().unwrap();
+    }
+
     fn cli(&self, args: &[&str]) {
         let ok = Command::new(BIN)
             .args(args)
@@ -550,4 +557,23 @@ fn a_long_agent_test_run_is_judged_by_its_real_age_after_nodoka_restarts() {
     let d = Daemon::start_env("longtest", "stop_long_tests_seconds = 5", &[("NODOKA_PRESSURE", "4")]);
     let stopped = eventually(3, || jest.0.try_wait().ok().flatten().is_some());
     assert!(stopped, "a 6 s old run counted as new:\n{}", d.log());
+}
+
+#[test]
+fn a_build_paused_for_memory_stays_paused_across_a_restart() {
+    let argv = ["node", "/app/node_modules/next/dist/bin/next", "build"];
+    let build = Job(fake("restart", &fakejob(), &std::env::temp_dir(), &argv, "burn"));
+    let other =
+        Job(fake("restart", &fakejob(), &std::env::temp_dir(), &["node", "/app/node_modules/.bin/vite"], "burn"));
+    std::thread::sleep(Duration::from_millis(300));
+    let freeze = [("NODOKA_PRESSURE", "4"), ("NODOKA_FREEZING", "1")];
+    let mut d = Daemon::start_env("restart", "", &freeze);
+    let pid = build.0.id() as i32;
+    assert!(eventually(20, || d.status().contains("paused: low memory")), "{}\n{}", d.status(), d.log());
+    // memory calm again, but no room for it yet: the new helper must take it over, not let it go
+    d.restart_env(&[("NODOKA_PRESSURE", "1"), ("NODOKA_AVAIL_MB", "0")]);
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(stopped(pid), "the restart resumed it:\n{}", d.log());
+    assert!(d.status().contains("paused: low memory"), "not taken over:\n{}\n{}", d.status(), d.log());
+    assert!(!stopped(other.0.id() as i32), "a dev server is never held");
 }

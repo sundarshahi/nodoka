@@ -38,6 +38,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   `-w 4`) get at most 2 workers, like tools that size their pool from the core count.
 - An agent's test run still going after 30 minutes while memory is critical is asked to exit
   (`stop_long_tests_minutes`, 0 turns it off).
+- Builds paused for memory stay paused across a restart of the helper (each update restarted it
+  and resumed them all at once); `nodoka off` and uninstall still resume everything.
 
 ### Changed
 
@@ -46,8 +48,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   the machine freezes. Before, one started after `max_wait_seconds`, or on a 1-second blip to warn.
 - What each command needed is kept in `~/.nodoka/peaks` across restarts; a restart made a known
   3.9 GB type check look new, and it started at critical memory.
-- While the machine freezes, a build paused for 10 minutes is asked to exit instead of getting its
-  turn; its agent can run it again. Builds started in a terminal keep waiting.
+- An agent's build held 10 minutes for memory (paused, or waiting to start while memory stays
+  critical) is asked to exit instead of getting its turn; its agent can run it again. Builds started
+  in a terminal still get their turn when the machine isn't freezing.
 
 - While the machine is freezing (swapping 100+ MB/s on macOS, PSI full 40%+ on Linux), the newest
   busy build is paused even in the slow lane, until there's room for it.
