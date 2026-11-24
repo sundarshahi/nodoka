@@ -24,6 +24,8 @@ pub struct Config {
     pub clean_dirs: Vec<PathBuf>,
     /// Stop an agent's test run that used no CPU this long; 0: never.
     pub stop_idle_tests_s: u64,
+    /// Stop an agent's test run that has run this long while memory is critical; 0: never.
+    pub stop_long_tests_s: u64,
     /// Close an agent session idle this long while memory is short; 0: never (they're only listed).
     pub close_idle_agents_s: u64,
     pub clean_caches_after_s: u64,
@@ -66,6 +68,11 @@ pub const TEMPLATE: &str = "\
 # finished but never exited (Jest with an open handle); it only holds memory, so it is asked to
 # exit. Watch modes, headless browsers and runs you start in a terminal are never stopped. 0: never.
 # stop_idle_tests_minutes = 30
+
+# A test run started without a terminal that is still going after this many minutes while memory is
+# critical is asked to exit too: its agent gave up waiting long ago (about 10 minutes). Runs you
+# start in a terminal are never stopped. 0: never.
+# stop_long_tests_minutes = 30
 
 # Coding-agent sessions (Claude Code, Codex) that did nothing for this many hours are asked to exit
 # while memory is short: each holds 200–300 MB plus its helpers, and editors keep dozens open. The
@@ -113,6 +120,7 @@ pub fn load(path: &Path) -> Config {
         pause_for_memory: false,
         clean_dirs: vec![],
         stop_idle_tests_s: 1800,
+        stop_long_tests_s: 1800,
         close_idle_agents_s: 0,
         clean_caches_after_s: 24 * 3600,
         remove_worktrees_after_s: 7 * 86400,
@@ -142,6 +150,7 @@ pub fn load(path: &Path) -> Config {
             ("agent_cpu_percent", Ok(v)) => c.agent_cpu_percent = (*v).clamp(1, 100),
             ("stop_idle_tests_minutes", Ok(v)) => c.stop_idle_tests_s = v * 60,
             ("stop_idle_tests_seconds", Ok(v)) => c.stop_idle_tests_s = *v,
+            ("stop_long_tests_minutes", Ok(v)) => c.stop_long_tests_s = v * 60,
             ("close_idle_agents_after_hours", Ok(v)) => c.close_idle_agents_s = v * 3600,
             ("close_idle_agents_after_seconds", Ok(v)) => c.close_idle_agents_s = *v,
             ("clean_caches_after_hours", Ok(v)) => c.clean_caches_after_s = v * 3600,
@@ -178,6 +187,7 @@ pub fn load(path: &Path) -> Config {
                         | "agent_cpu_percent"
                         | "stop_idle_tests_minutes"
                         | "stop_idle_tests_seconds"
+                        | "stop_long_tests_minutes"
                         | "close_idle_agents_after_hours"
                         | "close_idle_agents_after_seconds"
                         | "clean_caches_after_hours"

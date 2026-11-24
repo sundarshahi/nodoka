@@ -36,6 +36,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   the memory they hold; `close_idle_agents_after_hours` asks them to exit while memory is short.
 - While memory is short, Jest and Vitest started with an explicit worker count (`--maxWorkers=4`,
   `-w 4`) get at most 2 workers, like tools that size their pool from the core count.
+- An agent's test run still going after 30 minutes while memory is critical is asked to exit
+  (`stop_long_tests_minutes`, 0 turns it off).
 
 ### Changed
 

@@ -87,6 +87,8 @@ pub struct Sys {
     pub freezing: bool,
     /// A test run that used no CPU this long finished but never exited: stop it. 0: never.
     pub stop_idle_tests_s: u64,
+    /// A test run an agent started that has run this long while memory is critical: stop it. 0: never.
+    pub stop_long_tests_s: u64,
     /// Last time memory was critical (0: never). Set by `decide`.
     pub last_critical: u64,
 }
@@ -294,8 +296,12 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     //    while a Mac swapped 205 MB/s. Terminal runs are the user's to see and stop.
     for &i in &order {
         let j = &mut jobs[i];
-        let hung = j.runner && !j.terminal && j.state == State::Running && j.idle_for_s >= sys.stop_idle_tests_s;
-        if sys.stop_idle_tests_s > 0 && hung && !j.ended {
+        let agents = j.runner && !j.terminal && j.state == State::Running;
+        let hung = sys.stop_idle_tests_s > 0 && j.idle_for_s >= sys.stop_idle_tests_s;
+        // A busy one that runs on while memory is critical: an agent gives up on a command after
+        // about 10 minutes, and a Jest run kept 4 workers busy for 43 minutes on a Mac swapping 38 MB/s.
+        let long = sys.stop_long_tests_s > 0 && tight && j.age_s >= sys.stop_long_tests_s;
+        if agents && (hung || long) && !j.ended {
             j.ended = true; // ponytail: SIGTERM once, no SIGKILL follow-up; add one if runs ignore it
             out.push(Action::Stop(i));
         }
@@ -349,6 +355,7 @@ mod tests {
             pause_for_memory: false,
             freezing: false,
             stop_idle_tests_s: 1800,
+            stop_long_tests_s: 1800,
             last_critical: 0,
         }
     }
@@ -513,6 +520,25 @@ mod tests {
         assert!(decide(&mut jobs, &mut s).is_empty(), "nor on a 2 s blip to warn");
         s.now += CALM_BEFORE_RESUME_S;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "calm: room for it");
+    }
+
+    #[test]
+    fn an_agents_test_run_still_busy_after_30_minutes_is_stopped_only_while_memory_is_critical() {
+        let mut jest = job(Kind::Test, 1800);
+        jest.runner = true;
+        jest.admitted = true;
+        let mut mine = jest.clone();
+        mine.terminal = true;
+        let mut young = jest.clone();
+        young.age_s = 1700;
+        let mut jobs = vec![jest, mine, young];
+        let mut s = sys(100, 2, 3);
+        assert!(decide(&mut jobs, &mut s).is_empty(), "memory isn't critical: a long suite is fine");
+        s.level = 4;
+        s.now = 101;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(0)], "never a terminal run or a younger one");
+        s.now = 102;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "asked once");
     }
 
     #[test]

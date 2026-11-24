@@ -144,6 +144,9 @@ Things that make recognition hard, and how they are handled:
   handle — and only holds memory: it gets one SIGTERM. Watch modes count as dev servers, and headless
   browsers (anything with `headless` on its command line) wait on their agent, so neither is stopped;
   nor is a run started in a terminal. Four such Jest runs once held 2.9 GB for up to 78 minutes.
+  One still running after `stop_long_tests_minutes` (30) while memory is critical gets the same
+  SIGTERM, busy or not: an agent gives up on a command after about 10 minutes, and a Jest run kept
+  4 workers busy for 43 minutes on a Mac swapping 38 MB/s.
 - **Idle agent sessions** (`close_idle_agents_after_hours`, off). Editors keep coding-agent sessions
   (`claude`, `codex`) open for days: each holds 200–300 MB plus its MCP helpers, and 32 sessions idle
   for over a day once held 8 GB of a 16 GB Mac. A session is working when it or anything it started

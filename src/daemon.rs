@@ -127,6 +127,7 @@ pub fn run(opts: Options) {
         pause_for_memory: cfg.pause_for_memory,
         freezing: false,
         stop_idle_tests_s: cfg.stop_idle_tests_s,
+        stop_long_tests_s: cfg.stop_long_tests_s,
         last_critical: 0,
     };
     log(&format!(
@@ -170,6 +171,7 @@ pub fn run(opts: Options) {
             (st.base_cap, st.idle_s, st.max_wait_s) = (cfg.heavy_jobs, cfg.idle_sleep_s, cfg.max_wait_s);
             st.pause_for_memory = cfg.pause_for_memory;
             st.stop_idle_tests_s = cfg.stop_idle_tests_s;
+            st.stop_long_tests_s = cfg.stop_long_tests_s;
             seen.clear(); // custom rules may have changed
             log("settings reloaded");
         }
@@ -721,9 +723,13 @@ fn why(j: &Job, st: &Sys) -> String {
         State::Running if j.ended && j.kind == Kind::Build => {
             "paused 10 minutes while the machine froze; asked to exit (its agent can run it again)".into()
         }
-        State::Running if j.ended => format!(
+        State::Running if j.ended && st.stop_idle_tests_s > 0 && j.idle_for_s >= st.stop_idle_tests_s => format!(
             "a test run that used no CPU for {} min finished but never exited; asked it to exit",
             st.stop_idle_tests_s / 60
+        ),
+        State::Running if j.ended => format!(
+            "an agent's test run still going after {} min while memory is critical; asked it to exit",
+            j.age_s / 60
         ),
         State::Running if j.slow => "memory is critically low; it runs on spare CPU and disk time".into(),
         State::Running if j.bg && st.cpu_busy => "all cores are busy".into(),
