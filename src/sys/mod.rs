@@ -130,8 +130,10 @@ pub fn set_slow(pid: i32, on: bool) {
     }
 }
 
-pub fn signal(pid: i32, stop: bool) {
-    unsafe { libc::kill(pid, if stop { libc::SIGSTOP } else { libc::SIGCONT }) };
+/// Returns the error if the signal wasn't delivered.
+pub fn signal(pid: i32, stop: bool) -> Option<std::io::Error> {
+    let r = unsafe { libc::kill(pid, if stop { libc::SIGSTOP } else { libc::SIGCONT }) };
+    (r != 0).then(std::io::Error::last_os_error)
 }
 
 pub fn uid() -> u32 {

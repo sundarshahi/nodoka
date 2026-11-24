@@ -54,6 +54,8 @@ struct Tracked {
     /// Folder and command, for remembering how much memory this job needed; its peak so far.
     place: Option<(PathBuf, String)>,
     peak: u64,
+    /// Logged once: a process of this paused job was found running.
+    resumed_seen: bool,
 }
 
 pub struct Options {
@@ -281,6 +283,7 @@ pub fn run(opts: Options) {
                     sliced: false,
                     place,
                     peak: 0,
+                    resumed_seen: false,
                 }
             });
             (tr.mem, tr.tree, tr.stoppable) = (mem, tree, stoppable);
@@ -423,8 +426,12 @@ pub fn run(opts: Options) {
             }
             for &(q, _) in &tr.stoppable {
                 match *a {
-                    Action::Pause(_) => sys::signal(q, true),
-                    Action::Resume(_) => sys::signal(q, false),
+                    Action::Pause(_) => {
+                        if let Some(e) = sys::signal(q, true) {
+                            log(&format!("pause failed    pid {q} — {} ({e})", tr.label));
+                        }
+                    }
+                    Action::Resume(_) => _ = sys::signal(q, false),
                     Action::Bg(_, on) => sys::set_bg(q, on),
                     Action::Slow(_, on) => sys::set_slow(q, on),
                     Action::Stop(_) => {
@@ -442,10 +449,16 @@ pub fn run(opts: Options) {
             for tr in tracked.values().filter(|tr| tr.job.slow) {
                 tr.stoppable.iter().for_each(|&(q, _)| sys::set_slow(q, true));
             }
-            for tr in tracked.values().filter(|tr| tr.job.state != State::Running) {
+            for tr in tracked.values_mut().filter(|tr| tr.job.state != State::Running) {
                 for &(q, _) in &tr.stoppable {
                     if by_pid.get(&q).is_some_and(|p| !p.stopped) {
-                        sys::signal(q, true);
+                        let err = sys::signal(q, true);
+                        // a running process in a tree paused over a second ago: something else resumed it
+                        if t.saturating_sub(tr.job.state_since) >= 2 && !tr.resumed_seen {
+                            tr.resumed_seen = true;
+                            let why = err.map_or("stopped it again".into(), |e| format!("can't stop it: {e}"));
+                            log(&format!("found running   pid {q} in paused job {} — {why}", tr.label));
+                        }
                     }
                 }
             }
@@ -595,9 +608,9 @@ pub fn run(opts: Options) {
         if slice.is_empty() {
             sleep_tick();
         } else {
-            slice.iter().for_each(|&p| sys::signal(p, true));
+            slice.iter().for_each(|&p| _ = sys::signal(p, true));
             std::thread::sleep(Duration::from_secs_f64(1.0 - duty));
-            slice.iter().for_each(|&p| sys::signal(p, false));
+            slice.iter().for_each(|&p| _ = sys::signal(p, false));
             std::thread::sleep(Duration::from_secs_f64(duty));
         }
     }
