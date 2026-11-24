@@ -34,8 +34,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 - Idle coding-agent sessions (Claude Code, Codex) are listed in `nodoka status` after 24 hours with
   the memory they hold; `close_idle_agents_after_hours` asks them to exit while memory is short.
+- While memory is short, Jest and Vitest started with an explicit worker count (`--maxWorkers=4`,
+  `-w 4`) get at most 2 workers, like tools that size their pool from the core count.
 
 ### Changed
+
+- At critical memory a job that needed more memory last time than is free waits up to 10 minutes
+  before it starts (whatever `memory_brake` is), and doesn't start at all while the machine freezes.
+- While the machine freezes, a build paused for 10 minutes is asked to exit instead of getting its
+  turn; its agent can run it again. Builds started in a terminal keep waiting.
 
 - While the machine is freezing (swapping 100+ MB/s on macOS, PSI full 40%+ on Linux), the newest
   busy build is paused even in the slow lane, until there's room for it.

@@ -126,11 +126,16 @@ Things that make recognition hard, and how they are handled:
   and gives its memory back. After 20 calm seconds builds leave the lane one by one. Builds only:
   tests would run into their timeouts and installs into their download timeouts (background priority
   throttles the network too). Jobs waiting for memory before they start wait at most
-  `max_wait_seconds`.
+  `max_wait_seconds` at *warn*; at *critical* up to 10 minutes, and while the machine is freezing they
+  don't start at all — a third 3.9 GB type check was about to start after a minute while a 16 GB Mac
+  swapped 240 MB/s. Waiting before the start holds next to nothing.
   While the machine is *freezing* (macOS: swap-ins of 100 MB/s or more, smoothed over ~10 seconds;
   Linux: PSI memory `full avg10` of 40% or more) the newest busy build is paused, slowed or not: a
   slowed build still touches all its memory, and a 4 GB type check kept a 16 GB Mac swapping
-  205 MB/s. Paused builds follow the brake's rules below (room to resume, a turn after 10 minutes).
+  205 MB/s. Paused builds follow the brake's rules below (room to resume, a turn after 10 minutes),
+  except that no build gets its turn while the machine freezes: one paused that long is asked to exit
+  (SIGTERM) instead, one every 5 seconds, and its agent can run it again. Given its turn, a 3.8 GB type
+  check ran through a 240 MB/s freeze. Builds started in a terminal are never asked; they wait.
 - **Stuck test runs** (`stop_idle_tests_minutes`, 30). A test run started without a terminal that has
   used no CPU (under ~2% of a core) for that long has finished but never exited — Jest with an open
   handle — and only holds memory: it gets one SIGTERM. Watch modes count as dev servers, and headless
@@ -261,7 +266,10 @@ Router, webpack, Angular, Next.js, Rails and Django woke 0.59–0.84 s after a s
 - **Tools adapt to it.** The helper writes the current level to `~/.nodoka/pressure` every few seconds.
   A Node tool that starts while the level is *warn* or worse is told about 2 CPUs instead of half the
   cores, so it starts the fewest workers: a real `next build` peaked at 0.57–0.69 GB instead of
-  1.0–1.1 GB. The preload ignores the file once it is 30 s old, so a stopped helper changes nothing.
+  1.0–1.1 GB. Jest and Vitest given an explicit worker count (`--maxWorkers=4`, `-w 4`) get at most 2
+  then too; an agent's `jest --maxWorkers=4` held 1.6 GB while a Mac froze. Percentages already follow
+  the core count, and other tools' flags are left alone. The preload ignores the file once it is 30 s
+  old, so a stopped helper changes nothing.
 - **Why only builds are paused, never tests.** Clocks keep running while a process is paused. A test run
   paused mid-test fails its per-test timeouts on resume (5 s in [Jest](https://jestjs.io/docs/configuration#testtimeout-number)
   and [Vitest](https://vitest.dev/config/testtimeout)). Builds survive it: Next.js retries a static page

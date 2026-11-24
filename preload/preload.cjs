@@ -17,7 +17,19 @@ try {
     // Node tool that starts uses the fewest workers: a real `next build` peaked at ~0.6 GB, not 1.1.
     try {
       var fs = require('fs'), p = home + '/pressure';
-      if (Date.now() - fs.statSync(p).mtimeMs < 30000 && parseInt(fs.readFileSync(p, 'utf8'), 10) >= 2) n = Math.min(n, 2);
+      if (Date.now() - fs.statSync(p).mtimeMs < 30000 && parseInt(fs.readFileSync(p, 'utf8'), 10) >= 2) {
+        n = Math.min(n, 2);
+        // An explicit worker count bypasses the core count: an agent's `jest --maxWorkers=4` held 1.6 GB
+        // while a Mac froze. Jest and Vitest only; a percentage already follows the core count.
+        var a = process.argv;
+        if (/(^|[\\/])(jest|vitest)([\\/.]|$)/.test(a[1] || '')) {
+          for (var i = 2; i < a.length; i++) {
+            var m = /^(--max-?[wW]orkers=|-w=?)(\d+)$/.exec(a[i]);
+            if (m) { if (+m[2] > n) a[i] = m[1] + n; continue; }
+            if (/^(--max-?[wW]orkers|-w)$/.test(a[i]) && /^\d+$/.test(a[i + 1] || '') && +a[i + 1] > n) a[i + 1] = String(n);
+          }
+        }
+      }
     } catch (e) {}
     if (n >= real) return;
     os.cpus = function () { return cpus.apply(os, arguments).slice(0, n); };

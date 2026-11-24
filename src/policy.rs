@@ -181,8 +181,12 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     for i in queued {
         let j = &mut jobs[i];
         let short = short_of_memory(j, level, room);
-        let long = short && sys.pause_for_memory;
-        let overdue = now.saturating_sub(j.state_since) >= if long { MAX_PRESSURE_PAUSE_S } else { sys.max_wait_s };
+        // At critical memory a job that won't fit waits as long as a paused one, whatever the brake: a
+        // third 3.9 GB type check was about to start after a minute while a 16 GB Mac swapped 240 MB/s.
+        // While the machine freezes it doesn't start at all; it holds next to nothing while it waits.
+        let long = short && (sys.pause_for_memory || level >= 4);
+        let wait = if long { MAX_PRESSURE_PAUSE_S } else { sys.max_wait_s };
+        let overdue = now.saturating_sub(j.state_since) >= wait && !(short && sys.freezing);
         let free = running < cap && !short;
         if free || overdue {
             set(j, State::Running);
@@ -231,14 +235,25 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         }
     } else if since_act >= PRESSURE_STEP_S {
         let mut paused: Vec<usize> =
-            order.iter().copied().filter(|&i| jobs[i].state == State::PressurePaused).collect();
+            order.iter().copied().filter(|&i| jobs[i].state == State::PressurePaused && !jobs[i].ended).collect();
         paused.sort_by_key(|&i| jobs[i].state_since);
         let turn_running = jobs.iter().any(|j| j.turn && j.state == State::Running);
         let oldest = paused.first().copied();
-        let busy = |j: &Job| j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build && !j.turn;
-        if let Some(i) =
-            oldest.filter(|&i| !turn_running && now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S)
-        {
+        let busy = |j: &Job| {
+            j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build && !j.turn && !j.ended
+        };
+        let overdue = oldest.filter(|&i| now.saturating_sub(jobs[i].state_since) >= MAX_PRESSURE_PAUSE_S);
+        if let Some(i) = overdue.filter(|&i| sys.freezing && !jobs[i].terminal) {
+            // Its turn would add a running build to a freezing machine (a 3.8 GB type check did), and
+            // held, it keeps its memory and its agent waits on it: it's asked to exit; its agent can
+            // run it again. One every step, so each one's memory shows before the next goes.
+            // running again: the daemon re-pauses anything in a paused tree each tick, and `npm exec`
+            // re-paused while passing the signal on to `tsc` would hang
+            set(&mut jobs[i], State::Running);
+            jobs[i].ended = true;
+            out.push(Action::Stop(i));
+            sys.last_pressure_act = now;
+        } else if let Some(i) = overdue.filter(|_| !turn_running && !sys.freezing) {
             let j = &mut jobs[i];
             set(j, State::Running);
             j.turn = true;
@@ -430,6 +445,48 @@ mod tests {
         jobs.remove(1); // it finished
         s.now = 2005;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0), Action::Bg(0, true)], "then the next");
+    }
+
+    #[test]
+    fn a_build_held_ten_minutes_while_the_machine_freezes_is_asked_to_exit_not_given_a_turn() {
+        let mut jobs = vec![job(Kind::Build, 60), job(Kind::Build, 50)];
+        jobs.iter_mut().for_each(|j| j.admitted = true);
+        jobs[0].terminal = true;
+        let mut s = sys(100, 4, 3);
+        s.freezing = true;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(1)]);
+        s.now = 105;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        s.now = 100 + MAX_PRESSURE_PAUSE_S;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(1)], "no turn while freezing");
+        assert_eq!(jobs[1].state, State::Running, "never paused again while it exits");
+        s.now += PRESSURE_STEP_S;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "asked once; a terminal build is the user's");
+        s.freezing = false; // critical, no longer freezing: the terminal build gets its turn
+        s.now += PRESSURE_STEP_S;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)]);
+    }
+
+    #[test]
+    fn at_critical_memory_a_job_that_wont_fit_waits_ten_minutes_and_never_starts_while_freezing() {
+        let mut tsc = job(Kind::Build, 0);
+        tsc.expect = 4 << 30;
+        let mut jobs = vec![tsc];
+        let mut s = sys(100, 4, 5); // default brake (slow lane)
+        s.avail = 1 << 30;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        s.now = 100 + s.max_wait_s;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "critical: not after a minute");
+        s.now = 100 + MAX_PRESSURE_PAUSE_S;
+        s.freezing = true;
+        assert!(decide(&mut jobs, &mut s).is_empty(), "never into a freezing machine");
+        s.freezing = false;
+        s.now += 1;
+        assert_eq!(
+            decide(&mut jobs, &mut s),
+            vec![Action::Resume(0), Action::Bg(0, true), Action::Slow(0, true)],
+            "then it runs, in the slow lane"
+        );
     }
 
     #[test]

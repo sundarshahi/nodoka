@@ -171,7 +171,7 @@ optional settings; changes apply within a few seconds:
 
 ```ini
 heavy_jobs = 3            # builds/tests/installs at once; test runs count but never wait (default: 1 per 5 GB of memory, at most half your cores)
-cpus = 4                  # worker/thread count each tool is told about (default: half your cores, at least 2; 2 while memory is short)
+cpus = 4                  # worker/thread count each tool is told about (default: half your cores, at least 2; 2 while memory is short, explicit Jest/Vitest counts too)
 idle_sleep_minutes = 10   # 0 turns idle sleep off
 max_wait_seconds = 60     # a waiting job starts anyway after this long
 leftover_busy_minutes = 10  # a busy process left with no parent gets lower priority after this long; 0 turns it off
