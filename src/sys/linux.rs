@@ -253,3 +253,13 @@ fn split_nul(bytes: &[u8]) -> Vec<String> {
     }
     v
 }
+
+/// When the process started, in seconds since the epoch (boot time + clock ticks since boot).
+pub fn started(p: &Proc) -> u64 {
+    static BOOT: OnceLock<u64> = OnceLock::new();
+    let boot = *BOOT.get_or_init(|| {
+        let text = fs::read_to_string("/proc/stat").unwrap_or_default();
+        text.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok()).unwrap_or(0)
+    });
+    boot + p.id / clk_tck()
+}

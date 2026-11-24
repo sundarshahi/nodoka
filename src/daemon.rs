@@ -258,7 +258,9 @@ pub fn run(opts: Options) {
                     tree: vec![],
                     stoppable: vec![],
                     cpu_ns: cpu,
-                    first_seen: t,
+                    // already running when nodoka (re)started: its real age, or every update made a
+                    // 50-minute test run look new
+                    first_seen: if tick == 1 { sys::started(root).min(t) } else { t },
                     last_active: t,
                     mem: 0,
                     label,

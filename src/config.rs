@@ -151,6 +151,7 @@ pub fn load(path: &Path) -> Config {
             ("stop_idle_tests_minutes", Ok(v)) => c.stop_idle_tests_s = v * 60,
             ("stop_idle_tests_seconds", Ok(v)) => c.stop_idle_tests_s = *v,
             ("stop_long_tests_minutes", Ok(v)) => c.stop_long_tests_s = v * 60,
+            ("stop_long_tests_seconds", Ok(v)) => c.stop_long_tests_s = *v,
             ("close_idle_agents_after_hours", Ok(v)) => c.close_idle_agents_s = v * 3600,
             ("close_idle_agents_after_seconds", Ok(v)) => c.close_idle_agents_s = *v,
             ("clean_caches_after_hours", Ok(v)) => c.clean_caches_after_s = v * 3600,
@@ -188,6 +189,7 @@ pub fn load(path: &Path) -> Config {
                         | "stop_idle_tests_minutes"
                         | "stop_idle_tests_seconds"
                         | "stop_long_tests_minutes"
+                        | "stop_long_tests_seconds"
                         | "close_idle_agents_after_hours"
                         | "close_idle_agents_after_seconds"
                         | "clean_caches_after_hours"

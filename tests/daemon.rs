@@ -51,8 +51,15 @@ impl Daemon {
     }
 
     fn run(&self, exe: &Path, dir: &Path, argv: &[&str], mode: &str) -> Child {
+        fake(&self.scope, exe, dir, argv, mode)
+    }
+}
+
+/// A fake tool in `scope`, started with or without a daemon running.
+fn fake(scope: &str, exe: &Path, dir: &Path, argv: &[&str], mode: &str) -> Child {
+    {
         let mut c = Command::new(exe);
-        c.current_dir(dir).arg0(argv[0]).args(&argv[1..]).env("NODOKA_TEST", &self.scope).env("FAKEJOB", mode);
+        c.current_dir(dir).arg0(argv[0]).args(&argv[1..]).env("NODOKA_TEST", scope).env("FAKEJOB", mode);
         c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         unsafe {
             c.pre_exec(|| {
@@ -62,7 +69,9 @@ impl Daemon {
         }
         c.spawn().unwrap()
     }
+}
 
+impl Daemon {
     fn cli(&self, args: &[&str]) {
         let ok = Command::new(BIN)
             .args(args)
@@ -472,9 +481,11 @@ const SLOW: i32 = 3;
 
 #[test]
 fn critical_memory_puts_a_busy_build_in_the_slow_lane_without_pausing_it() {
-    // at critical memory a new build first waits for a slot (holding nothing); keep that wait short
-    let d = Daemon::start_env("slowlane", "max_wait_seconds = 1", &[("NODOKA_PRESSURE", "4")]);
-    let build = Job(d.job(&["node", "/app/node_modules/next/dist/bin/next", "build"], "burn"));
+    // already running when memory goes critical: a build that starts at critical waits before it starts
+    let argv = ["node", "/app/node_modules/next/dist/bin/next", "build"];
+    let build = Job(fake("slowlane", &fakejob(), &std::env::temp_dir(), &argv, "burn"));
+    std::thread::sleep(Duration::from_millis(300));
+    let d = Daemon::start_env("slowlane", "", &[("NODOKA_PRESSURE", "4")]);
     let pid = build.0.id() as i32;
     let worker = || children(pid).first().copied();
     let slowed = eventually(15, || lane(pid) == SLOW && worker().is_some_and(|w| lane(w) == SLOW));
@@ -505,11 +516,14 @@ fn an_agents_test_run_that_sits_idle_is_asked_to_exit_but_an_idle_browser_is_not
 
 #[test]
 fn a_freezing_machine_pauses_even_a_slowed_build() {
+    // already running when the freeze starts: a build that starts while memory is critical waits
+    // before it starts instead
+    let argv = ["node", "/app/node_modules/next/dist/bin/next", "build"];
+    let build = Job(fake("freeze", &fakejob(), &std::env::temp_dir(), &argv, "burn"));
+    std::thread::sleep(Duration::from_millis(300));
     let env = [("NODOKA_PRESSURE", "4"), ("NODOKA_FREEZING", "1")];
-    let d = Daemon::start_env("freeze", "max_wait_seconds = 1", &env);
-    let build = Job(d.job(&["node", "/app/node_modules/next/dist/bin/next", "build"], "burn"));
+    let d = Daemon::start_env("freeze", "", &env);
     let pid = build.0.id() as i32;
-    // a new build may first wait for a slot (also stopped): wait for the freeze pause itself
     let paused = eventually(20, || d.status().contains("paused: low memory"));
     assert!(paused, "not paused for memory:\n{}\n{}", d.status(), d.log());
     assert!(stopped(pid));
@@ -526,4 +540,14 @@ fn an_agent_session_idle_too_long_is_closed_while_memory_is_short_but_a_working_
     std::thread::sleep(Duration::from_secs(6));
     assert!(working.0.try_wait().unwrap().is_none(), "the working session was closed:\n{}", d.log());
     assert!(!d.log().contains(&format!("agent session pid {}", working.0.id())), "{}", d.log());
+}
+
+#[test]
+fn a_long_agent_test_run_is_judged_by_its_real_age_after_nodoka_restarts() {
+    let argv = ["node", "/app/node_modules/.bin/jest", "--maxWorkers=4"];
+    let mut jest = Job(fake("longtest", &fakejob(), &std::env::temp_dir(), &argv, "burn"));
+    std::thread::sleep(Duration::from_secs(6));
+    let d = Daemon::start_env("longtest", "stop_long_tests_seconds = 5", &[("NODOKA_PRESSURE", "4")]);
+    let stopped = eventually(3, || jest.0.try_wait().ok().flatten().is_some());
+    assert!(stopped, "a 6 s old run counted as new:\n{}", d.log());
 }

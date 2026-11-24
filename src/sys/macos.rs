@@ -355,6 +355,11 @@ pub fn tty_path(pid: i32) -> Option<PathBuf> {
     Some(PathBuf::from("/dev").join(name))
 }
 
+/// When the process started, in seconds since the epoch.
+pub fn started(p: &Proc) -> u64 {
+    p.id / 1_000_000
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
