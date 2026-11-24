@@ -294,7 +294,15 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
             // Resume only once there's room for all of it. Calm alone isn't enough: pausing the build
             // is what calmed memory, so it went critical again 3s after resuming (a lone 5 GB type
             // check flapped every 25s).
-            if calm && room >= jobs[i].mem {
+            // A build resumed or started in the last minute is still pulling its memory back in, and
+            // the free memory doesn't show it yet: three 4 GB type checks resumed 5 s apart, each
+            // seeing the room the one before was about to take.
+            let arriving: u64 = jobs
+                .iter()
+                .filter(|j| j.state == State::Running && j.kind.heavy() && now.saturating_sub(j.state_since) < 60)
+                .map(|j| j.mem.max(j.expect))
+                .sum();
+            if calm && room >= jobs[i].mem + arriving {
                 set(&mut jobs[i], State::Running);
                 out.push(Action::Resume(i));
                 sys.last_pressure_act = now;
@@ -558,6 +566,25 @@ mod tests {
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(0)], "never a terminal run or a younger one");
         s.now = 102;
         assert!(decide(&mut jobs, &mut s).is_empty(), "asked once");
+    }
+
+    #[test]
+    fn paused_builds_are_resumed_one_a_minute_while_the_last_one_pulls_its_memory_back() {
+        let mut jobs = vec![job(Kind::Build, 60), job(Kind::Build, 50)];
+        jobs.iter_mut().for_each(|j| (j.admitted, j.terminal, j.mem) = (true, true, 4 << 30));
+        let mut s = sys(100, 4, 3);
+        s.freezing = true;
+        decide(&mut jobs, &mut s);
+        s.now = 105;
+        decide(&mut jobs, &mut s);
+        assert!(jobs.iter().all(|j| j.state == State::PressurePaused));
+        (s.freezing, s.level, s.level_since, s.avail) = (false, 2, 110, 5 << 30);
+        s.now = 130;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(1)], "paused first, resumed first");
+        s.now = 135; // free memory doesn't show the first one coming back yet
+        assert!(decide(&mut jobs, &mut s).is_empty(), "not both at once");
+        s.now = 191;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "a minute later, if there's still room");
     }
 
     #[test]

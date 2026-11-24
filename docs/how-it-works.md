@@ -145,6 +145,9 @@ Things that make recognition hard, and how they are handled:
   Builds paused for memory stay paused across a restart of the helper (an update resumed three type
   checks at once): the ledger marks them, and the next start takes them over with their pause time.
   `nodoka off`, uninstalling and a test helper whose test run died still resume everything.
+  A build resumed or started in the last minute counts as already holding its memory when the next
+  resume is weighed: a resumed job pulls its memory back in over seconds, and three 4 GB type checks
+  were resumed 5 seconds apart, each seeing the room the one before was about to take.
 - **Stuck test runs** (`stop_idle_tests_minutes`, 30). A test run started without a terminal that has
   used no CPU (under ~2% of a core) for that long has finished but never exited — Jest with an open
   handle — and only holds memory: it gets one SIGTERM. Watch modes count as dev servers, and headless

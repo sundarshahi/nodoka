@@ -40,6 +40,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   (`stop_long_tests_minutes`, 0 turns it off).
 - Builds paused for memory stay paused across a restart of the helper (each update restarted it
   and resumed them all at once); `nodoka off` and uninstall still resume everything.
+- Paused builds were resumed 5 seconds apart, each seeing memory the one before was about to take
+  back (three 4 GB type checks in 11 seconds); a build resumed or started in the last minute now
+  counts as holding its memory.
 
 ### Changed
 
