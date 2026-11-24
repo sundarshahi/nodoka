@@ -43,6 +43,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Paused builds were resumed 5 seconds apart, each seeing memory the one before was about to take
   back (three 4 GB type checks in 11 seconds); a build resumed or started in the last minute now
   counts as holding its memory.
+- Security and dependency scanners are recognised as heavy work: whole-repo `gitleaks`, `trufflehog`,
+  `semgrep`, `trivy`, `osv-scanner`, `grype`, `syft` and `codeql database` (an agent's `gitleaks
+  detect` used 5 cores). Pre-commit checks of staged changes are left alone.
 
 ### Changed
 

@@ -587,6 +587,18 @@ pub fn rule(tool: &str, rest: &[String]) -> Option<Kind> {
         | "herb" => Some(Build),
         "srb" => pick(sub, &[(&["tc", "typecheck"], Build)]),
 
+        // ---------------- Security and dependency scanners: whole-repo scans are as heavy as a build
+        // (an agent's `gitleaks detect` used 5 cores). A pre-commit check of staged changes isn't:
+        // held, it would hold up the commit.
+        "gitleaks" if !has("--staged") && !has("--pre-commit") => pick(sub, &[(&["detect", "git", "dir"], Build)]),
+        "trufflehog" => pick(sub, &[(&["git", "github", "gitlab", "filesystem", "s3", "docker"], Build)]),
+        "semgrep" => {
+            (!matches!(sub, "login" | "logout" | "lsp" | "publish" | "show" | "install-semgrep-pro")).then_some(Build)
+        }
+        "trivy" => pick(sub, &[(&["fs", "filesystem", "repo", "repository", "image", "i", "config", "rootfs"], Build)]),
+        "osv-scanner" | "grype" | "syft" => Some(Build),
+        "codeql" => pick(sub, &[(&["database"], Build)]),
+
         // ---------------- Python
         "manage" | "django-admin" => pick(
             sub,
@@ -823,6 +835,23 @@ mod tests {
         assert_eq!(classify(&mac_chrome, &Custom::new()), Some(Test));
         assert_eq!(c("/usr/bin/chromium --profile-directory=Default"), None);
         assert_eq!(c("/Applications/Firefox.app/Contents/MacOS/firefox"), None);
+    }
+
+    #[test]
+    fn whole_repo_scanners_are_heavy_but_a_pre_commit_check_is_not() {
+        use Kind::*;
+        assert_eq!(c("gitleaks detect --source repo --no-banner --redact"), Some(Build));
+        assert_eq!(c("/opt/homebrew/bin/gitleaks git ."), Some(Build));
+        assert_eq!(c("gitleaks git --staged"), None);
+        assert_eq!(c("gitleaks protect --staged"), None);
+        assert_eq!(c("gitleaks version"), None);
+        assert_eq!(c("trufflehog filesystem ."), Some(Build));
+        assert_eq!(c("semgrep scan --config auto"), Some(Build));
+        assert_eq!(c("semgrep --config auto ."), Some(Build));
+        assert_eq!(c("semgrep login"), None);
+        assert_eq!(c("trivy fs ."), Some(Build));
+        assert_eq!(c("osv-scanner -r ."), Some(Build));
+        assert_eq!(c("codeql database analyze db"), Some(Build));
     }
 
     #[test]
