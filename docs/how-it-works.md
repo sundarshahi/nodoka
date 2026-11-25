@@ -159,9 +159,11 @@ Things that make recognition hard, and how they are handled:
 - **Idle agent sessions** (`close_idle_agents_after_hours`, off). Editors keep coding-agent sessions
   (`claude`, `codex`) open for days: each holds 200–300 MB plus its MCP helpers, and 32 sessions idle
   for over a day once held 8 GB of a 16 GB Mac. A session is working when it or anything it started
-  used more than 2% of a core over a minute, or it started a program (a tool call); an idle session's
-  own timers use under 1%. Sessions idle 24 hours (or the set limit) are listed in `nodoka status`.
-  With the setting on, one idle that long gets one SIGTERM while memory is at *warn* or worse; it exits
+  used more than 2% of a core over a minute, or it started a program of its own (a tool call); an idle
+  session's own timers use under 1%. Only its direct children count as new programs: a wait loop an
+  agent left running (`until …; do sleep 10; done`) starts a new `sleep` every few seconds, and one that
+  could never finish kept a session idle for 36 hours looking busy. Sessions idle 24 hours (or the set
+  limit) are listed in `nodoka status`. With the setting on, one idle that long gets one SIGTERM while memory is at *warn* or worse; it exits
   within a second and takes its helpers with it, and its chat is already saved. Sessions in a terminal
   are never closed. A Claude Code session's idle time starts at its last chat write (its
   `sessions/<pid>.json` names the chat file), so sessions open before nodoka started are judged

@@ -500,9 +500,12 @@ pub fn run(opts: Options) {
             sessions.retain(|k, _| alive.contains(k));
             let is_agent = |p: &Proc| agents::NAMES.contains(&p.comm.as_str());
             for p in procs.iter().filter(|p| is_agent(p)) {
-                let tree: HashSet<i32> = descendants(p.pid, &kids).into_iter().collect();
-                let (cpu, mem) =
-                    tree.iter().filter_map(|&q| sys::cpu_mem(q)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+                let (cpu, mem) = descendants(p.pid, &kids)
+                    .into_iter()
+                    .filter_map(sys::cpu_mem)
+                    .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+                // a tool call starts a direct child; a wait loop's `sleep`s are deeper
+                let tree: HashSet<i32> = kids.get(&p.pid).into_iter().flatten().copied().collect();
                 let entry = sessions.entry((p.pid, p.id)).or_insert_with(|| {
                     let env = sys::args_env(p.pid).map(|(_, env)| env).unwrap_or_default();
                     let ours = opts

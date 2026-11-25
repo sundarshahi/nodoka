@@ -78,6 +78,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An idle agent session with a wait loop left running under it (`until …; do sleep 10; done`) was
+  never closed: each new `sleep` counted as a tool call. Only programs the session starts itself count now.
 - Bun-built tools, Claude Code's `claude` among them, refused to start in a shell with nodoka on:
   Bun kept the quotes around the preload path in `BUN_OPTIONS` (`preload not found "\"…\""`).
 

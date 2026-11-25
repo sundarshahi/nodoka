@@ -1,7 +1,8 @@
 //! Test helper for tests/daemon.rs: pretends to be a dev tool. The tests start it with a fake
 //! command line (for example `node …/next/dist/bin/next build`) and choose what it does with
 //! FAKEJOB=burn (use CPU, with one busy child process), serve:<port>[:<delay ms>] (answer TCP requests),
-//! idle (do nothing), leftover (use CPU after its parent is gone, for at most 60s), or hold:<MB> (hold that much memory).
+//! idle (do nothing), waitloop (idle, with a shell under it starting a `sleep` every second),
+//! leftover (use CPU after its parent is gone, for at most 60s), or hold:<MB> (hold that much memory).
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -38,6 +39,10 @@ fn main() {
         loop {
             std::hint::black_box((0..100_000u64).sum::<u64>());
         }
+    }
+    if mode == "waitloop" {
+        // an agent's leftover `until …; do sleep 1; done`; ends with its parent
+        Command::new("sh").args(["-c", "while kill -0 $PPID 2>/dev/null; do sleep 1; done"]).spawn().unwrap();
     }
     if let Some(mb) = mode.strip_prefix("hold:") {
         // hold <mb> MB of memory that's really used, the way a type check holds its program

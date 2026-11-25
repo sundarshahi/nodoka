@@ -550,6 +550,14 @@ fn an_agent_session_idle_too_long_is_closed_while_memory_is_short_but_a_working_
 }
 
 #[test]
+fn an_idle_agent_session_with_a_wait_loop_left_under_it_is_still_closed() {
+    let d = Daemon::start_env("agentloop", "close_idle_agents_after_seconds = 3", &[("NODOKA_PRESSURE", "2")]);
+    let mut idle = Job(d.agent("claude", "waitloop"));
+    let closed = eventually(25, || idle.0.try_wait().ok().flatten().is_some());
+    assert!(closed, "a new `sleep` every second kept it looking busy:\n{}", d.log());
+}
+
+#[test]
 fn a_long_agent_test_run_is_judged_by_its_real_age_after_nodoka_restarts() {
     let argv = ["node", "/app/node_modules/.bin/jest", "--maxWorkers=4"];
     let mut jest = Job(fake("longtest", &fakejob(), &std::env::temp_dir(), &argv, "burn"));

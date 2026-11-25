@@ -20,7 +20,7 @@ pub struct Session {
     pub idle_since: u64,
     cpu: u64,
     at: u64,
-    tree: HashSet<i32>,
+    children: HashSet<i32>,
     pub mem: u64,
     pub terminal: bool,
     /// Already asked to exit.
@@ -29,23 +29,25 @@ pub struct Session {
 
 impl Session {
     /// `last_seen`: its last known activity, if older than now (a session open before nodoka started).
-    pub fn new(cpu: u64, tree: HashSet<i32>, t: u64, terminal: bool, last_seen: Option<u64>) -> Self {
+    pub fn new(cpu: u64, children: HashSet<i32>, t: u64, terminal: bool, last_seen: Option<u64>) -> Self {
         let idle_since = last_seen.map_or(t, |s| s.min(t));
-        Session { idle_since, cpu, at: t, tree, mem: 0, terminal, asked: false }
+        Session { idle_since, cpu, at: t, children, mem: 0, terminal, asked: false }
     }
 
-    /// Working = it, or anything it started, used CPU, or it started a program (a tool call).
-    pub fn sample(&mut self, cpu: u64, tree: HashSet<i32>, t: u64) {
+    /// Working = it, or anything it started, used CPU, or it started a program of its own (a tool
+    /// call). `children` are its direct children only: a wait loop left running under one of them
+    /// (`until ...; do sleep 10; done`) starts a new `sleep` every few seconds but is not work.
+    pub fn sample(&mut self, cpu: u64, children: HashSet<i32>, t: u64) {
         let used = cpu.saturating_sub(self.cpu);
         let busy = used > t.saturating_sub(self.at).max(WINDOW_S) * BUSY_NS_PER_S
-            || tree.iter().any(|p| !self.tree.contains(p));
+            || children.iter().any(|p| !self.children.contains(p));
         if busy {
             self.idle_since = t;
         }
         if busy || t.saturating_sub(self.at) >= WINDOW_S {
             (self.cpu, self.at) = (cpu, t);
         }
-        self.tree = tree;
+        self.children = children;
     }
 
     pub fn idle_for(&self, t: u64) -> u64 {
