@@ -9,6 +9,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 - A notification names the biggest apps when memory stays critically low for 2 minutes and no
   build, test or install is running, at most once an hour (`notify_after_minutes`, 0 turns it off).
+  In WSL 2 it is a Windows notification.
+- [Windows setup guide](docs/windows.md): nodoka inside WSL 2, step by step.
 - Leftover guard: a process whose parent is gone that keeps a core busy for 10 minutes gets lower
   priority and is listed in `nodoka status` with the command that stops it
   (`leftover_busy_minutes`, 0 turns it off).

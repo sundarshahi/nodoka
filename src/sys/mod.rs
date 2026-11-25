@@ -97,20 +97,49 @@ pub fn project_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// A desktop notification, in the background (it never holds up the daemon). Text goes in as
-/// arguments, never into the script. Linux without `notify-send`: nothing (it's in the log).
+/// arguments or environment, never into a script. Linux without `notify-send`: nothing (it's in the log).
 pub fn notify(title: &str, body: &str) {
-    let mut c = if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("osascript");
+    let wsl = std::fs::read_to_string("/proc/sys/kernel/osrelease").is_ok_and(|v| v.contains("microsoft"));
+    let mut c = notify_cmd(title, body, wsl);
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    std::thread::spawn(move || c.status());
+}
+
+/// Windows toast from PowerShell; text comes from the environment (WSLENV carries it out of WSL).
+pub const TOAST_PS1: &str = include_str!("toast.ps1");
+
+fn notify_cmd(title: &str, body: &str, wsl: bool) -> std::process::Command {
+    use std::process::Command;
+    if cfg!(target_os = "macos") {
+        let mut c = Command::new("osascript");
         c.args(["-e", "on run a", "-e", "display notification (item 2 of a) with title (item 1 of a)"]);
         c.args(["-e", "end run", title, body]);
         c
+    } else if wsl {
+        // the helper runs as a systemd service: Windows isn't on its PATH
+        let mut c = Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
+        c.args(["-NoProfile", "-NonInteractive", "-Command", TOAST_PS1]);
+        let carry = std::env::var("WSLENV").map_or(String::new(), |w| format!("{w}:"));
+        c.env("NODOKA_TITLE", title).env("NODOKA_BODY", body).env("WSLENV", carry + "NODOKA_TITLE:NODOKA_BODY");
+        c
     } else {
-        let mut c = std::process::Command::new("notify-send");
+        let mut c = Command::new("notify-send");
         c.args(["--app-name=nodoka", title, body]);
         c
-    };
-    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    std::thread::spawn(move || c.status());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn in_wsl_the_notice_is_a_windows_toast_with_the_text_outside_the_script() {
+    let c = notify_cmd("Memory is full", "firefox 7 GB; $(rm -rf ~)", true);
+    assert!(c.get_program().to_string_lossy().ends_with("powershell.exe"));
+    let env: Vec<_> = c.get_envs().map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned()))).collect();
+    let get = |k: &str| env.iter().find(|e| e.0 == k).and_then(|e| e.1.clone()).unwrap();
+    assert_eq!(get("NODOKA_BODY"), "firefox 7 GB; $(rm -rf ~)");
+    assert!(get("WSLENV").ends_with("NODOKA_TITLE:NODOKA_BODY"));
+    assert!(c.get_args().all(|a| !a.to_string_lossy().contains("firefox")), "text never in the script");
+    assert_eq!(notify_cmd("t", "b", false).get_program(), "notify-send");
 }
 
 pub fn load1() -> f64 {

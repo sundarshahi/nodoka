@@ -48,7 +48,7 @@ turned off, and the only thing ever stopped is an agent's test run that has sat 
 
 ## Install
 
-macOS and Linux (including WSL 2):
+macOS and Linux (including WSL 2; on Windows, see [docs/windows.md](docs/windows.md)):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sundarshahi/nodoka/main/install.sh | sh
@@ -153,7 +153,7 @@ file in the project was saved, and once it slept again, a real HTTP request was 
 | Starts at login | LaunchAgent | systemd user service | |
 
 Tested on macOS 27 (Apple silicon) and Linux 6.10 (arm64). Release builds cover x86_64 and arm64 for
-both. Windows support is the most-wanted contribution — see [CONTRIBUTING.md](CONTRIBUTING.md).
+both. On Windows, nodoka runs inside WSL 2: [setup guide](docs/windows.md). Native Windows support is the most-wanted contribution — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Commands
 
