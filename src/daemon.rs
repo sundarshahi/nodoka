@@ -158,7 +158,10 @@ pub fn run(opts: Options) {
         std::thread::spawn(move || {
             loop {
                 let c = config::load(&path);
-                if !c.clean_dirs.is_empty() {
+                if !c.clean_dirs.is_empty() && cfg!(windows) {
+                    // a worktree in use is only known from processes' working folders, unread on Windows yet
+                    log("clean           off on Windows for now: nodoka can't yet tell which worktrees are in use");
+                } else if !c.clean_dirs.is_empty() {
                     let rules = crate::clean::Rules {
                         dirs: c.clean_dirs,
                         caches_after_s: c.clean_caches_after_s,

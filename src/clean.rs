@@ -32,7 +32,7 @@ pub fn pass(r: &Rules, in_use: &[String], now: u64) -> Vec<String> {
             let Some(gitdir) = linked_gitdir(&w) else { continue };
             let idle = now.saturating_sub(last_git_activity(&gitdir));
             let wp = w.to_string_lossy();
-            let busy = in_use.iter().any(|u| u == wp.as_ref() || u.starts_with(&format!("{wp}/")));
+            let busy = in_use.iter().any(|u| Path::new(u).starts_with(&w));
             if busy || r.caches_after_s == 0 || idle < r.caches_after_s {
                 continue;
             }
@@ -149,7 +149,7 @@ pub fn in_use() -> Vec<String> {
             seen.insert(c.to_string_lossy().into_owned());
         }
         if let Some((argv, _)) = sys::args_env(p.pid) {
-            seen.extend(argv.into_iter().filter(|a| a.starts_with('/')));
+            seen.extend(argv.into_iter().filter(|a| Path::new(a).is_absolute()));
         }
     }
     seen.into_iter().collect()
@@ -165,6 +165,18 @@ mod tests {
     }
 
     #[test]
+    fn a_worktree_is_in_use_when_a_path_inside_it_is_whatever_the_separator() {
+        let w = std::env::temp_dir().join("trees").join("app");
+        let inside = w.join("src").to_string_lossy().replace('\\', "/");
+        assert!(Path::new(&inside).starts_with(&w));
+        assert!(
+            !Path::new(&format!("{}-two/src", w.display())).starts_with(&w),
+            "a sibling with a longer name isn't it"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)] // cleaning is off on Windows until it can see working folders
     fn idle_worktrees_lose_their_caches_and_go_only_when_nothing_is_lost() {
         let base = std::env::temp_dir().join(format!("nodoka-clean-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
