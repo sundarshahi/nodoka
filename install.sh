@@ -10,7 +10,8 @@ version="${NODOKA_VERSION:-latest}"
 case "$(uname -s)" in
   Darwin) os=apple-darwin ;;
   Linux) os=unknown-linux-musl ;;
-  *) echo "nodoka runs on macOS and Linux (WSL 2 works). Windows support is planned." >&2; exit 1 ;;
+  MINGW* | MSYS* | CYGWIN*) echo "On Windows, run this in PowerShell instead: irm https://raw.githubusercontent.com/$repo/main/install.ps1 | iex" >&2; exit 1 ;;
+  *) echo "nodoka runs on macOS, Linux (WSL 2 too) and Windows." >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;

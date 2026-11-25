@@ -31,7 +31,6 @@ pub fn pass(r: &Rules, in_use: &[String], now: u64) -> Vec<String> {
         for w in entries.flatten().map(|e| e.path()) {
             let Some(gitdir) = linked_gitdir(&w) else { continue };
             let idle = now.saturating_sub(last_git_activity(&gitdir));
-            let wp = w.to_string_lossy();
             let busy = in_use.iter().any(|u| Path::new(u).starts_with(&w));
             if busy || r.caches_after_s == 0 || idle < r.caches_after_s {
                 continue;
@@ -66,7 +65,7 @@ pub fn pass(r: &Rules, in_use: &[String], now: u64) -> Vec<String> {
             let size = du(&w);
             if r.dry_run {
                 out.push(format!("clean           would remove worktree {} ({})", w.display(), gb(size)));
-            } else if git(&w, &["worktree", "remove", &wp]).is_some() {
+            } else if git(&w, &["worktree", "remove", &real(&w)]).is_some() {
                 out.push(format!(
                     "clean           removed worktree {} ({}, idle {} days; its commit is on a remote)",
                     w.display(),
@@ -77,6 +76,13 @@ pub fn pass(r: &Rules, in_use: &[String], now: u64) -> Vec<String> {
         }
     }
     out
+}
+
+/// The path as git recorded it: Windows can hand out 8.3 short names (C:\\Users\\RUNNER~1), and
+/// git doesn't match those to its worktree list.
+fn real(w: &Path) -> String {
+    let p = fs::canonicalize(w).map_or_else(|_| w.display().to_string(), |p| p.display().to_string());
+    p.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(p)
 }
 
 /// The gitdir of a linked worktree (a `.git` file, not a folder: never a main checkout).
@@ -159,10 +165,9 @@ pub fn in_use() -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
-    fn sh(dir: &Path, cmd: &str) {
-        let ok = Command::new("sh").arg("-c").arg(cmd).current_dir(dir).output().unwrap();
-        assert!(ok.status.success(), "{cmd}: {}", String::from_utf8_lossy(&ok.stderr));
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let o = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
     }
 
     #[test]
@@ -177,28 +182,36 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)] // cleaning is off on Windows until it can see working folders
     fn idle_worktrees_lose_their_caches_and_go_only_when_nothing_is_lost() {
         let base = std::env::temp_dir().join(format!("nodoka-clean-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let (repo, trees) = (base.join("repo"), base.join("trees"));
         fs::create_dir_all(&trees).unwrap();
-        sh(&base, "git init -q --bare remote.git && git init -q -b main repo");
-        sh(
-            &repo,
-            "git config user.email t@t && git config user.name t && git config commit.gpgsign false \
-             && printf 'node_modules/\\n.env\\n' > .gitignore && git add . && git commit -qm one \
-             && git remote add origin ../remote.git && git push -q origin main",
-        );
+        git_ok(&base, &["init", "-q", "--bare", "remote.git"]);
+        git_ok(&base, &["init", "-q", "-b", "main", "repo"]);
+        for kv in [["user.email", "t@t"], ["user.name", "t"], ["commit.gpgsign", "false"]] {
+            git_ok(&repo, &["config", kv[0], kv[1]]);
+        }
+        fs::write(repo.join(".gitignore"), "node_modules/\n.env\n").unwrap();
+        git_ok(&repo, &["add", "."]);
+        git_ok(&repo, &["commit", "-qm", "one"]);
+        git_ok(&repo, &["remote", "add", "origin", "../remote.git"]);
+        git_ok(&repo, &["push", "-q", "origin", "main"]);
         // pushed: goes; unpushed commit: stays; has .env: stays; in use: untouched
-        for (name, extra) in [
-            ("pushed", ""),
-            ("unpushed", "&& echo x > a && git add a && git -c user.email=t@t -c user.name=t commit -qm two"),
-            ("has-env", "&& echo SECRET=1 > .env"),
-            ("in-use", ""),
-        ] {
-            sh(&repo, &format!("git worktree add -q ../trees/{name} -b {name} main"));
-            sh(&trees.join(name), &format!("mkdir -p node_modules/pkg && echo code > node_modules/pkg/i.js {extra}"));
+        for name in ["pushed", "unpushed", "has-env", "in-use"] {
+            git_ok(&repo, &["worktree", "add", "-q", &format!("../trees/{name}"), "-b", name, "main"]);
+            let w = trees.join(name);
+            fs::create_dir_all(w.join("node_modules/pkg")).unwrap();
+            fs::write(w.join("node_modules/pkg/i.js"), "code").unwrap();
+            match name {
+                "unpushed" => {
+                    fs::write(w.join("a"), "x").unwrap();
+                    git_ok(&w, &["add", "a"]);
+                    git_ok(&w, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "two"]);
+                }
+                "has-env" => fs::write(w.join(".env"), "SECRET=1").unwrap(),
+                _ => {}
+            }
         }
         let in_use = vec![trees.join("in-use").join("src").to_string_lossy().into_owned()];
         let rules =

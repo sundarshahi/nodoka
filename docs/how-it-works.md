@@ -363,6 +363,12 @@ settings when they don't have one; `nodoka uninstall` removes exactly that entry
 | CPU time | `proc_pid_rusage`, scaled by `mach_timebase_info` on Apple silicon | `/proc/<pid>/stat`, clock ticks |
 | Start at login | LaunchAgent `nodoka` | systemd user service `nodoka` |
 
-Windows is planned: Job objects and `NtSuspendProcess` for pausing, `SetPriorityClass` and EcoQoS for
-priority, `GlobalMemoryStatusEx` for pressure. It has no API for a socket's accept-queue length, so idle
-wake would need a small port proxy there.
+On Windows: processes from a Toolhelp snapshot (the user's own logon session), command line through
+`ProcessCommandLineInformation`, environment and working folder from the process's parameters block,
+CPU and private bytes from its own counters; pressure from free memory, the commit limit and the
+page-in rate (`\\Memory\\Pages Input/sec`); pausing with `NtSuspendProcess` and a full per-thread
+resume (Windows counts suspensions); priority classes for the background and slow lanes. A program
+counts as yours unless a coding agent started it (Windows has no controlling terminal). Idle servers
+don't sleep: Windows has no API for another process's accept queue or unread socket data, so waking
+one would need a small port proxy.
+

@@ -3,11 +3,16 @@
 
 use super::{Proc, Sock};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, LocalFree, SYSTEMTIME};
+use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD,
     THREADENTRY32, Thread32First, Thread32Next,
+};
+use windows_sys::Win32::System::Performance::{
+    PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue,
+    PdhOpenQueryW,
 };
 use windows_sys::Win32::System::ProcessStatus::{
     K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
@@ -17,7 +22,8 @@ use windows_sys::Win32::System::SystemInformation::{GetLocalTime, GlobalMemorySt
 use windows_sys::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcessId, GetProcessTimes, GetSystemTimes, IDLE_PRIORITY_CLASS,
     NORMAL_PRIORITY_CLASS, OpenProcess, OpenThread, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-    PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE, ResumeThread, SetPriorityClass, THREAD_SUSPEND_RESUME, TerminateProcess,
+    PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE, PROCESS_VM_READ, ResumeThread, SetPriorityClass, THREAD_SUSPEND_RESUME,
+    TerminateProcess,
 };
 use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
 
@@ -98,8 +104,6 @@ pub fn procs(_uid: u32) -> Vec<Proc> {
 }
 
 /// Arguments with `\` turned into `/`, so the rules' paths (`node_modules/next/…`) match.
-// ponytail: no environment yet (it needs the process's memory read); test scopes and
-// CLAUDE_CONFIG_DIR aren't seen on Windows
 pub fn args_env(pid: i32) -> Option<(Vec<String>, Vec<String>)> {
     let h = H::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
     let mut buf = vec![0u8; 8192];
@@ -140,7 +144,53 @@ pub fn args_env(pid: i32) -> Option<(Vec<String>, Vec<String>)> {
         })
         .collect();
     unsafe { LocalFree(argv as _) };
-    Some((args, vec![]))
+    let env = params(pid).map(|p| p.0).unwrap_or_default();
+    Some((args, env))
+}
+
+fn read<T: Copy>(h: HANDLE, at: usize) -> Option<T> {
+    let mut v = std::mem::MaybeUninit::<T>::uninit();
+    let mut n = 0;
+    let ok = unsafe { ReadProcessMemory(h, at as _, v.as_mut_ptr() as _, size_of::<T>(), &mut n) } != 0;
+    (ok && n == size_of::<T>()).then(|| unsafe { v.assume_init() })
+}
+
+fn read_utf16(h: HANDLE, at: usize, bytes: usize) -> Option<Vec<u16>> {
+    let mut v = vec![0u16; bytes / 2];
+    let mut n = 0;
+    let ok = unsafe { ReadProcessMemory(h, at as _, v.as_mut_ptr() as _, v.len() * 2, &mut n) } != 0;
+    ok.then(|| {
+        v.truncate(n / 2);
+        v
+    })
+}
+
+/// (environment, working folder) from the process's parameters block, read out of its memory.
+/// Offsets are the 64-bit layout (x64 and ARM64): PEB.ProcessParameters at 0x20; in the
+/// parameters, CurrentDirectory.DosPath at 0x38, Environment at 0x80, EnvironmentSize at 0x3F0.
+fn params(pid: i32) -> Option<(Vec<String>, PathBuf)> {
+    let h = H::open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ)?;
+    // PROCESS_BASIC_INFORMATION: exit status, PEB address, affinity, priority, pid, parent pid
+    let mut pbi = [0usize; 6];
+    let mut ret = 0;
+    if unsafe { NtQueryInformationProcess(h.0, 0, pbi.as_mut_ptr() as *mut u8, size_of_val(&pbi) as u32, &mut ret) } < 0
+    {
+        return None;
+    }
+    let pp: usize = read(h.0, pbi[1] + 0x20)?;
+    let (cwd_len, cwd_at): (u16, usize) = (read(h.0, pp + 0x38)?, read(h.0, pp + 0x40)?);
+    let (env_at, env_size): (usize, usize) = (read(h.0, pp + 0x80)?, read(h.0, pp + 0x3F0)?);
+    let cwd = String::from_utf16_lossy(&read_utf16(h.0, cwd_at, cwd_len as usize)?);
+    // "C:\work\app\" → "C:\work\app"; a drive's root keeps its backslash
+    let cwd = if cwd.len() > 3 { cwd.trim_end_matches('\\').to_string() } else { cwd };
+    let block = read_utf16(h.0, env_at, env_size.min(1 << 20)).unwrap_or_default();
+    let env = block
+        .split(|&c| c == 0)
+        .take_while(|e| !e.is_empty())
+        .map(String::from_utf16_lossy)
+        .filter(|e| !e.starts_with('=')) // "=C:=C:\work": the shell's per-drive folders
+        .collect();
+    Some((env, PathBuf::from(cwd)))
 }
 
 /// (CPU time in ns, private bytes: what the process alone commits, like Task Manager's "Memory").
@@ -153,7 +203,10 @@ pub fn cpu_mem(pid: i32) -> Option<(u64, u64)> {
     ok.then_some((cpu * 100, m.PrivateUsage as u64))
 }
 
-// ponytail: no sockets yet (GetExtendedTcpTable); idle dev servers don't sleep on Windows
+/// None reported: idle dev servers don't sleep on Windows. Waking one needs to see a request
+/// waiting, and Windows doesn't show another process's unread socket data or accept queue (a
+/// browser reusing a kept-alive connection to a paused server would hang).
+// ponytail: a small port proxy in front of the server would make sleep safe here
 pub fn sockets(_pids: &[i32]) -> Vec<Sock> {
     vec![]
 }
@@ -171,7 +224,8 @@ pub fn pressure() -> u32 {
     let m = memory();
     let avail_pct = (m.ullAvailPhys * 100).checked_div(m.ullTotalPhys).unwrap_or(100);
     let commit_pct = 100 - (m.ullAvailPageFile * 100).checked_div(m.ullTotalPageFile).unwrap_or(100);
-    level(avail_pct, commit_pct)
+    // swapping hard is critical whatever the counters say (as on macOS)
+    if page_in_mbs() >= 30.0 { 4 } else { level(avail_pct, commit_pct) }
 }
 
 fn level(avail_pct: u64, commit_pct: u64) -> u32 {
@@ -184,9 +238,45 @@ fn level(avail_pct: u64, commit_pct: u64) -> u32 {
     }
 }
 
-// ponytail: no freeze signal yet (hard page faults per second need performance counters)
+/// Memory read back from the page file, MB/s, smoothed like macOS's swap-in rate (one sample a
+/// second at most; "\\Memory\\Pages Input/sec" counts 4 KB pages read on hard faults).
+fn page_in_mbs() -> f64 {
+    static Q: OnceLock<Option<(usize, usize)>> = OnceLock::new();
+    static LAST: Mutex<(u64, f64)> = Mutex::new((0, 0.0));
+    let Some(&(q, c)) = Q
+        .get_or_init(|| {
+            let (mut q, mut c) = (unsafe { std::mem::zeroed() }, unsafe { std::mem::zeroed() });
+            let path: Vec<u16> = "\\Memory\\Pages Input/sec".encode_utf16().chain([0]).collect();
+            let ok = unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut q) } == 0
+                && unsafe { PdhAddEnglishCounterW(q, path.as_ptr(), 0, &mut c) } == 0
+                && unsafe { PdhCollectQueryData(q) } == 0;
+            ok.then_some((q as usize, c as usize))
+        })
+        .as_ref()
+    else {
+        return 0.0;
+    };
+    let mut last = LAST.lock().unwrap();
+    let now = super::now();
+    if now == last.0 {
+        return last.1;
+    }
+    let mut v = PDH_FMT_COUNTERVALUE::default();
+    let ok = unsafe { PdhCollectQueryData(q as _) } == 0
+        && unsafe { PdhGetFormattedCounterValue(c as _, PDH_FMT_DOUBLE, std::ptr::null_mut(), &mut v) } == 0;
+    let mbs = if ok {
+        unsafe { v.Anonymous.doubleValue }
+        *4096.0 / (1 << 20) as f64
+    } else {
+        0.0
+    };
+    *last = (now, 0.7 * last.1 + 0.3 * mbs);
+    last.1
+}
+
+/// Reading memory back from disk this fast is what a freeze is (the same line as on macOS).
 pub fn freezing() -> bool {
-    false
+    page_in_mbs() >= 100.0
 }
 
 pub fn avail_bytes() -> u64 {
@@ -200,12 +290,11 @@ pub fn mem_bytes() -> u64 {
     }
 }
 
-// ponytail: no working folder yet (it needs the process's memory read); worktree cleanup and
-// wake-on-save are off on Windows
-pub fn cwd(_pid: i32) -> Option<PathBuf> {
-    None
+pub fn cwd(pid: i32) -> Option<PathBuf> {
+    params(pid).map(|p| p.1)
 }
 
+/// Unused on Windows: it wakes sleeping servers, and they don't sleep here (see `sockets`).
 pub struct Watch;
 
 impl Watch {
@@ -350,6 +439,28 @@ mod tests {
         assert!(checked > 0);
         terminate(pid);
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn another_processs_environment_and_working_folder_are_read() {
+        let dir = std::env::temp_dir();
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .env("NODOKA_TEST", "envcheck")
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (_, env) = args_env(pid).unwrap();
+        assert!(env.iter().any(|e| e == "NODOKA_TEST=envcheck"), "{env:?}");
+        let got = cwd(pid).unwrap();
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap().to_string_lossy().to_lowercase();
+        assert_eq!(canon(&got), canon(&dir));
+        terminate(pid);
+        child.wait().unwrap();
+        assert!(page_in_mbs() >= 0.0 && !freezing() || page_in_mbs() >= 100.0);
     }
 
     #[test]
