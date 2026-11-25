@@ -38,6 +38,7 @@ pub struct Sock {
 
 /// Folders whose changes never wake a sleeping server: dependencies, build output, caches, logs.
 /// On Linux they are also not watched, which keeps the number of inotify watches small.
+#[cfg_attr(windows, allow(dead_code))] // until Windows watches files
 const QUIET: &[&str] = &[
     ".git",
     ".hg",
@@ -85,6 +86,7 @@ const QUIET: &[&str] = &[
     "DerivedData",
 ];
 
+#[cfg_attr(windows, allow(dead_code))]
 pub fn quiet(name: &str) -> bool {
     QUIET.contains(&name)
 }
