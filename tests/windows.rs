@@ -56,7 +56,16 @@ fn build(scope: &str, mode: &str) -> Kill {
     fs::create_dir_all(&dir).unwrap();
     let node = dir.join("node.exe");
     if !node.exists() {
+        // `cargo test --all-targets` builds examples as test binaries under another name
         let fake = Path::new(BIN).parent().unwrap().join("examples").join("fakejob.exe");
+        if !fake.exists() {
+            let ok = Command::new(env!("CARGO"))
+                .args(["build", "--example", "fakejob"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(ok, "could not build the fakejob example");
+        }
         fs::copy(&fake, &node).unwrap_or_else(|e| panic!("copy {}: {e}", fake.display()));
     }
     let child = Command::new(&node)
