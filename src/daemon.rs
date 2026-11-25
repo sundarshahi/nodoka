@@ -23,7 +23,14 @@ struct Seen {
     production: bool,
     /// A headless browser: waits on its agent, never stopped for being idle.
     browser: bool,
+    /// No rule matched: found by how much it uses (see `HEAVY_WINDOW_S`).
+    found: bool,
 }
+
+/// A program no rule knows (a Java map-tile build, a data script) started by a coding agent becomes
+/// a build once it has kept more than 1.5 cores busy, or a whole core while holding 1 GB, for this
+/// long: from then on it is slowed, paused and resumed like one.
+const HEAVY_WINDOW_S: u64 = 30;
 
 struct Tracked {
     job: Job,
@@ -95,6 +102,12 @@ pub fn run(opts: Options) {
     // first look time + verdict. Unrecognised processes are looked at again during their first 10s:
     // tools rename themselves at startup (npm → `npm ci`, Next → `next-build (v16)`).
     let mut seen: HashMap<(i32, u64, String), (u64, Option<Seen>)> = HashMap::new();
+    // unknown programs under agents: (window start, CPU ns then)
+    let mut heavy: HashMap<Key, (u64, u64)> = HashMap::new();
+    // test runs share a loaded machine at low priority: they pin a shorter window and fewer cores
+    let pin = |var: &str| opts.scope.as_ref().and_then(|_| std::env::var(var).ok()?.parse::<f64>().ok());
+    let heavy_window = pin("NODOKA_HEAVY_WINDOW").map_or(HEAVY_WINDOW_S, |w| w as u64);
+    let heavy_cores = pin("NODOKA_HEAVY_CORES").unwrap_or(1.5);
     let mut tracked: HashMap<Key, Tracked> = HashMap::new();
     // tests pin it: the real machine's pressure (a busy dev Mac swaps) must not decide their outcome
     let pressure = || {
@@ -215,6 +228,69 @@ pub fn run(opts: Options) {
             }
         }
 
+        // Heavy work no rule knows, started by an agent (a terminal's is the user's own).
+        if tick % 5 == 0 {
+            heavy.retain(|k, _| alive.contains(k));
+            let under_agent = |p: &Proc| {
+                let mut a = p.ppid;
+                for _ in 0..64 {
+                    let Some(q) = by_pid.get(&a) else { return false };
+                    if classified.contains_key(&a) {
+                        return false; // already part of a job
+                    }
+                    if agents::NAMES.contains(&q.comm.as_str()) {
+                        return true;
+                    }
+                    a = q.ppid;
+                }
+                false
+            };
+            let mut found = vec![];
+            for p in procs.iter().filter(|p| {
+                !p.tty
+                    && p.pid != me
+                    && !classified.contains_key(&p.pid)
+                    && !agents::NAMES.contains(&p.comm.as_str())
+                    && !sys::is_shell(&p.comm)
+            }) {
+                if !under_agent(p) {
+                    continue;
+                }
+                let Some((cpu, mem)) = sys::cpu_mem(p.pid) else { continue };
+                let (since, cpu0) = *heavy.entry((p.pid, p.id)).or_insert((t, cpu));
+                let span = t.saturating_sub(since);
+                if span < heavy_window {
+                    continue;
+                }
+                let cores = cpu.saturating_sub(cpu0) as f64 / (span as f64 * 1e9);
+                if cores >= heavy_cores || cores >= 1.0 && mem >= 1 << 30 {
+                    found.push((p, cores, mem));
+                } else {
+                    heavy.insert((p.pid, p.id), (t, cpu)); // a new window
+                }
+            }
+            for (p, cores, mem) in found {
+                let Some((argv, env)) = sys::args_env(p.pid) else { continue };
+                let ours = opts
+                    .scope
+                    .as_deref()
+                    .is_none_or(|sc| env.iter().any(|e| e.strip_prefix("NODOKA_TEST=") == Some(sc)));
+                if !ours {
+                    continue;
+                }
+                let label = label(&argv);
+                log(&format!(
+                    "found           build pid {} — {label} (no rule for it; an agent started it and it kept {cores:.1} cores busy, holding {})",
+                    p.pid,
+                    size(mem)
+                ));
+                let s = Seen { kind: Kind::Build, label, production: false, browser: false, found: true };
+                seen.insert((p.pid, p.id, p.comm.clone()), (t, Some(s)));
+                classified.insert(p.pid, Kind::Build);
+                heavy.remove(&(p.pid, p.id));
+            }
+        }
+
         // A job is a classified process with no classified ancestor, plus all its descendants.
         let mut roots_now = HashSet::new();
         for (&pid, &kind) in &classified {
@@ -256,11 +332,13 @@ pub fn run(opts: Options) {
                 Tracked {
                     // jobs already running when nodoka starts are left as they are
                     job: Job {
-                        admitted: tick == 1,
+                        // found by its load: it's been running a while, so it isn't queued like a new start
+                        admitted: tick == 1 || s.is_some_and(|s| s.found),
                         state: if paused_since.is_some() { State::PressurePaused } else { State::Running },
                         state_since: paused_since.unwrap_or(t),
                         expect,
                         runner: kind == Kind::Test && !s.is_some_and(|s| s.browser),
+                        keep: s.is_some_and(|s| s.found),
                         ..Job::new(kind, t)
                     },
                     tree: vec![],
@@ -268,7 +346,7 @@ pub fn run(opts: Options) {
                     cpu_ns: cpu,
                     // already running when nodoka (re)started: its real age, or every update made a
                     // 50-minute test run look new
-                    first_seen: if tick == 1 { sys::started(root).min(t) } else { t },
+                    first_seen: if tick == 1 || s.is_some_and(|s| s.found) { sys::started(root).min(t) } else { t },
                     last_active: t,
                     mem: 0,
                     label,
@@ -709,7 +787,7 @@ fn look(pid: i32, cfg: &Config, scope: Option<&str>) -> Option<Seen> {
     .iter()
     .any(|(k, v)| var(k) == Some(v));
     let browser = argv.iter().any(|a| a.contains("headless"));
-    Some(Seen { kind, label: label(&argv), production, browser })
+    Some(Seen { kind, label: label(&argv), production, browser, found: false })
 }
 
 /// A short, readable command line for status output.

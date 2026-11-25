@@ -156,6 +156,14 @@ Things that make recognition hard, and how they are handled:
   One still running after `stop_long_tests_minutes` (30) while memory is critical gets the same
   SIGTERM, busy or not: an agent gives up on a command after about 10 minutes, and a Jest run kept
   4 workers busy for 43 minutes on a Mac swapping 38 MB/s.
+- **Heavy work no rule knows.** Rules name the usual builds, tests and installs; an agent can run
+  anything else (a Java map-tile build took 2 cores and 4 GB for 20 minutes while nodoka paused a
+  type check next to it). A program started by a coding agent that no rule matches becomes a build
+  once it keeps more than 1.5 cores busy, or a whole core while holding 1 GB, for 30 seconds. From
+  then on it is slowed, paused and resumed like one, but never asked to exit: it has run a while and
+  may run long, so when it has waited 10 minutes it gets its turn instead. It counts as already
+  started, so it is never queued. Programs started in a terminal, and agent sessions themselves,
+  are left alone.
 - **Idle agent sessions** (`close_idle_agents_after_hours`, off). Editors keep coding-agent sessions
   (`claude`, `codex`) open for days: each holds 200–300 MB plus its MCP helpers, and 32 sessions idle
   for over a day once held 8 GB of a 16 GB Mac. A session is working when it or anything it started

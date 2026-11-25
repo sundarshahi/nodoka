@@ -41,6 +41,9 @@ pub struct Job {
     pub runner: bool,
     /// Sent a stop signal; not sent again.
     pub ended: bool,
+    /// Long work found by how it behaves, not by a rule (a map build in Java): never asked to exit;
+    /// paused or slowed, it is always resumed.
+    pub keep: bool,
 }
 
 impl Job {
@@ -64,6 +67,7 @@ impl Job {
             slow: false,
             runner: false,
             ended: false,
+            keep: false,
         }
     }
 }
@@ -261,7 +265,7 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
             j.state == State::Running && j.pausable && j.active && j.kind == Kind::Build && !j.turn && !j.ended
         };
         let held_long = |i: &usize| now.saturating_sub(jobs[*i].state_since) >= MAX_PRESSURE_PAUSE_S;
-        let agents = paused.iter().copied().find(|i| held_long(i) && !jobs[*i].terminal);
+        let agents = paused.iter().copied().find(|i| held_long(i) && !jobs[*i].terminal && !jobs[*i].keep);
         let overdue = oldest.filter(held_long);
         if let Some(i) = agents {
             // An agent's build held 10 minutes: its agent stopped waiting long ago (after about 10
@@ -479,6 +483,23 @@ mod tests {
         jobs.remove(1); // it finished
         s.now = 2005;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "then the next");
+    }
+
+    #[test]
+    fn long_work_found_by_its_load_is_paused_while_freezing_and_resumed_never_asked_to_exit() {
+        let mut jobs = vec![job(Kind::Build, 60)];
+        (jobs[0].admitted, jobs[0].keep) = (true, true);
+        let mut s = sys(100, 4, 3);
+        s.freezing = true;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(0)]);
+        for now in [400, 100 + MAX_PRESSURE_PAUSE_S, 1500] {
+            s.now = now;
+            assert!(decide(&mut jobs, &mut s).is_empty(), "still freezing: it waits, it is never stopped");
+        }
+        s.freezing = false;
+        s.now = 1505;
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0), Action::Bg(0, true)], "its turn: it finishes");
+        assert!(!jobs[0].ended);
     }
 
     #[test]
