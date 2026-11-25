@@ -109,6 +109,9 @@ fn env_fish(dir: &Path, cpus: usize) -> String {
 
 /// Shell startup files that get one marked line sourcing env.sh.
 fn rc_files() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return vec![]; // user environment variables reach every shell, Git Bash included
+    }
     let h = home();
     let shell = std::env::var("SHELL").unwrap_or_default();
     let mut v = Vec::new();
@@ -130,8 +133,13 @@ fn fish_file() -> Option<PathBuf> {
 }
 
 fn editor_settings() -> Vec<PathBuf> {
-    let base =
-        if cfg!(target_os = "macos") { home().join("Library/Application Support") } else { home().join(".config") };
+    let base = if cfg!(target_os = "macos") {
+        home().join("Library/Application Support")
+    } else if cfg!(windows) {
+        home().join("AppData/Roaming")
+    } else {
+        home().join(".config")
+    };
     ["Code", "Cursor", "Code - Insiders", "Windsurf", "VSCodium", "Antigravity"]
         .iter()
         .map(|e| base.join(e).join("User/settings.json"))
@@ -140,14 +148,12 @@ fn editor_settings() -> Vec<PathBuf> {
 }
 
 pub fn install(cfg: &Config) -> Result<(), String> {
-    if cfg!(windows) {
-        return Err("nodoka can't set itself up on Windows yet. Install it inside WSL 2 instead: \
-                    https://github.com/sundarshahi/nodoka/blob/main/docs/windows.md"
-            .into());
-    }
     let dir = config::dir();
     fs::create_dir_all(dir.join("bin")).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let bin = dir.join("bin/nodoka");
+    let bin = dir.join(if cfg!(windows) { "bin/nodoka.exe" } else { "bin/nodoka" });
+    if cfg!(windows) {
+        stop_service(); // a running program can't be replaced on Windows
+    }
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     if me != bin {
         let tmp = dir.join("bin/.nodoka.new");
@@ -173,6 +179,9 @@ pub fn install(cfg: &Config) -> Result<(), String> {
         fs::write(&f, env_fish(&dir, cfg.cpus)).map_err(|e| e.to_string())?;
         println!("✓ new fish shells load it ({})", f.display());
     }
+
+    #[cfg(windows)]
+    windows_env::set(&dir, cfg.cpus)?;
 
     for s in editor_settings() {
         let text = fs::read_to_string(&s).unwrap_or_default();
@@ -249,6 +258,8 @@ pub fn uninstall() {
         fs::remove_file(&f).ok();
         println!("✓ removed {}", f.display());
     }
+    #[cfg(windows)]
+    windows_env::restore(&dir);
     for s in editor_settings() {
         if let Ok(text) = fs::read_to_string(&s) {
             if text.contains(EDITOR_MARK) {
@@ -260,7 +271,7 @@ pub fn uninstall() {
     // Shells that are already open still point NODE_OPTIONS here; keep a no-op preload so Node keeps
     // starting in them. Everything else goes.
     fs::write(dir.join("preload.cjs"), "// nodoka was uninstalled\n").ok();
-    for f in ["env.sh", "bin/nodoka", "status", "paused", "off"] {
+    for f in ["env.sh", "bin/nodoka", "bin/nodoka.exe", "status", "paused", "off"] {
         fs::remove_file(dir.join(f)).ok();
     }
     println!("✓ nodoka removed. Your settings stay in {} in case you come back.", dir.join("config").display());
@@ -379,22 +390,195 @@ pub fn service_running() -> bool {
     Command::new("systemctl").args(["--user", "is-active", "--quiet", SERVICE]).status().is_ok_and(|s| s.success())
 }
 
+/// Runs a PowerShell script; values go in through the environment, never into the script.
 #[cfg(windows)]
-fn start_service(_bin: &Path) -> Result<(), String> {
-    Err("starting at login isn't supported on Windows yet".into())
+fn ps(script: &str, env: &[(&str, &str)]) -> Result<String, String> {
+    let mut c = Command::new("powershell.exe");
+    c.args(["-NoProfile", "-NonInteractive", "-Command", script]).envs(env.iter().copied());
+    let o = c.output().map_err(|e| format!("run PowerShell: {e}"))?;
+    if o.status.success() {
+        Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
+    }
 }
 
 #[cfg(windows)]
-fn stop_service() {}
+const RUN_KEY: &str = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+/// Starts at login from the user's Run key, and now. `--detach` hands over to a hidden supervisor
+/// that restarts the helper if it stops.
+// ponytail: the Run key starts a console program, so a window flashes briefly at login; a small
+// windowless launcher would remove it
+#[cfg(windows)]
+fn start_service(bin: &Path) -> Result<(), String> {
+    let run = format!("\"{}\" daemon --detach", bin.display());
+    ps(&format!("Set-ItemProperty -Path '{RUN_KEY}' -Name {SERVICE} -Value $env:NODOKA_RUN"), &[("NODOKA_RUN", &run)])?;
+    crate::detach(bin)?;
+    println!("✓ background helper running; it starts again at login");
+    Ok(())
+}
+
+/// The helper's processes, supervisors first (so none restarts a helper being stopped).
+#[cfg(windows)]
+fn helpers() -> Vec<i32> {
+    let me = std::process::id() as i32;
+    let mut v: Vec<(bool, i32)> = crate::sys::procs(0)
+        .into_iter()
+        .filter(|p| p.pid != me && p.comm.eq_ignore_ascii_case("nodoka"))
+        .filter_map(|p| {
+            let (argv, _) = crate::sys::args_env(p.pid)?;
+            (argv.get(1).map(String::as_str) == Some("daemon"))
+                .then(|| (!argv.iter().any(|a| a == "--supervise"), p.pid))
+        })
+        .collect();
+    v.sort();
+    v.into_iter().map(|(_, pid)| pid).collect()
+}
+
+#[cfg(windows)]
+fn stop_service() {
+    ps(&format!("Remove-ItemProperty -Path '{RUN_KEY}' -Name {SERVICE} -ErrorAction SilentlyContinue"), &[]).ok();
+    let pids = helpers();
+    pids.iter().for_each(|&p| crate::sys::terminate(p));
+    if !pids.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(500)); // let Windows release the program file
+        println!("✓ background helper stopped");
+    }
+}
 
 #[cfg(windows)]
 pub fn service_running() -> bool {
-    false
+    !helpers().is_empty()
+}
+
+/// Windows has no shell startup file every program reads: the settings go into the user's
+/// environment variables, which new terminals, editors and agents all inherit. What was there
+/// before is kept in `windows-env`, so uninstall puts it back exactly.
+#[cfg_attr(not(windows), allow(dead_code))] // the plan is tested everywhere, applied on Windows
+mod windows_env {
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    const BEFORE: &str = "windows-env";
+
+    /// What to set, given the user's current values (absent = empty). Never overrides a cap the
+    /// user set; puts nodoka's Node options in front of the user's own.
+    pub fn plan(old: &HashMap<String, String>, dir: &Path, cpus: usize, semi: u64) -> Vec<(String, String)> {
+        let get = |k: &str| old.get(k).map(String::as_str).unwrap_or("");
+        // forward slashes: Node reads a backslash in NODE_OPTIONS as an escape (C:\Users → C:Users)
+        let pre = Path::new(&dir.join("preload.cjs").display().to_string().replace('\\', "/")).to_path_buf();
+        let mut v = vec![];
+        let ours = |s: &str| s.contains("nodoka/preload.cjs") || s.contains("nodoka\\preload.cjs");
+        if !ours(get("NODE_OPTIONS")) {
+            let mine = format!("--require=\"{}\" --max-semi-space-size={semi}", pre.display());
+            v.push(("NODE_OPTIONS".into(), [mine.as_str(), get("NODE_OPTIONS")].join(" ").trim().to_string()));
+        }
+        let bun = super::bun_line(&pre, |o| o.to_string());
+        if !bun.is_empty() && !ours(get("BUN_OPTIONS")) {
+            v.push(("BUN_OPTIONS".into(), [bun.as_str(), get("BUN_OPTIONS")].join(" ").trim().to_string()));
+        }
+        for var in std::iter::once("NODOKA_CPUS").chain(super::CAPS.iter().map(|c| c.0)) {
+            if get(var).is_empty() {
+                v.push((var.into(), cpus.to_string()));
+            }
+        }
+        v
+    }
+
+    /// `name=value` lines; the first value recorded for a name wins (a reinstall keeps the original).
+    pub fn merge_before(text: &str, old: &HashMap<String, String>, names: &[String]) -> String {
+        let mut out = text.to_string();
+        for n in names {
+            if !text.lines().any(|l| l.split_once('=').is_some_and(|(k, _)| k == n)) {
+                out += &format!("{n}={}\n", old.get(n).map(String::as_str).unwrap_or(""));
+            }
+        }
+        out
+    }
+
+    #[cfg(windows)]
+    const READ: &str = "foreach ($n in $env:NODOKA_NAMES -split ',') { \
+        Write-Output \"$n=$([Environment]::GetEnvironmentVariable($n, 'User'))\" }";
+    /// Sets (or, when empty, deletes) user variables; adds or removes nodoka's bin folder in the
+    /// user Path, kept as an expandable string so `%USERPROFILE%` entries still expand.
+    #[cfg(windows)]
+    const WRITE: &str = "$ErrorActionPreference = 'Stop'; \
+        $k = Get-Item HKCU:\\Environment; \
+        $p = $k.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); \
+        $parts = @($p -split ';' | Where-Object { $_ -and $_ -ne $env:NODOKA_BIN }); \
+        if ($env:NODOKA_ADD_BIN -eq '1') { $parts += $env:NODOKA_BIN }; \
+        Set-ItemProperty HKCU:\\Environment -Name Path -Value ($parts -join ';') -Type ExpandString; \
+        foreach ($l in $env:NODOKA_SET -split \"`n\") { if ($l) { $n, $v = $l -split '=', 2; \
+          [Environment]::SetEnvironmentVariable($n, $(if ($v) { $v } else { $null }), 'User') } }";
+
+    #[cfg(windows)]
+    fn read(names: &[&str]) -> Result<HashMap<String, String>, String> {
+        let out = super::ps(READ, &[("NODOKA_NAMES", &names.join(","))])?;
+        Ok(out.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.into(), v.trim_end().into())).collect())
+    }
+
+    #[cfg(windows)]
+    pub fn set(dir: &Path, cpus: usize) -> Result<(), String> {
+        let names: Vec<&str> =
+            ["NODE_OPTIONS", "BUN_OPTIONS", "NODOKA_CPUS"].into_iter().chain(super::CAPS.iter().map(|c| c.0)).collect();
+        let old = read(&names)?;
+        let todo = plan(&old, dir, cpus, super::semi_space_mb());
+        let file = dir.join(BEFORE);
+        let changed: Vec<String> = todo.iter().map(|t| t.0.clone()).collect();
+        std::fs::write(&file, merge_before(&std::fs::read_to_string(&file).unwrap_or_default(), &old, &changed))
+            .map_err(|e| e.to_string())?;
+        let lines: String = todo.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+        let bin = dir.join("bin").display().to_string();
+        super::ps(WRITE, &[("NODOKA_SET", &lines), ("NODOKA_BIN", &bin), ("NODOKA_ADD_BIN", "1")])?;
+        println!("✓ new terminals, editors and agents get it (your user environment variables)");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub fn restore(dir: &Path) {
+        let file = dir.join(BEFORE);
+        let lines = std::fs::read_to_string(&file).unwrap_or_default();
+        let bin = dir.join("bin").display().to_string();
+        if super::ps(WRITE, &[("NODOKA_SET", &lines), ("NODOKA_BIN", &bin), ("NODOKA_ADD_BIN", "0")]).is_ok() {
+            std::fs::remove_file(&file).ok();
+            println!("✓ your user environment variables are as they were");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_windows_nodokas_variables_go_first_never_override_a_cap_and_uninstall_restores_the_first_values() {
+        let dir = Path::new("C:\\Users\\me\\.nodoka");
+        let old: std::collections::HashMap<String, String> =
+            [("NODE_OPTIONS", "--max-old-space-size=4096"), ("CARGO_BUILD_JOBS", "2")]
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect();
+        let plan = windows_env::plan(&old, dir, 4, 16);
+        let get = |k: &str| plan.iter().find(|p| p.0 == k).map(|p| p.1.as_str());
+        assert_eq!(
+            get("NODE_OPTIONS"),
+            Some("--require=\"C:/Users/me/.nodoka/preload.cjs\" --max-semi-space-size=16 --max-old-space-size=4096")
+        );
+        assert_eq!(get("CARGO_BUILD_JOBS"), None, "the user's own cap stays");
+        assert_eq!(get("GOMAXPROCS"), Some("4"));
+        assert_eq!(get("BUN_OPTIONS"), Some("--preload=C:/Users/me/.nodoka/preload.cjs --smol"));
+
+        // installed once: running install again changes nothing
+        let mut now = old.clone();
+        now.extend(plan.iter().cloned());
+        assert!(windows_env::plan(&now, dir, 4, 16).is_empty());
+
+        let names: Vec<String> = plan.iter().map(|p| p.0.clone()).collect();
+        let first = windows_env::merge_before("", &old, &names);
+        assert!(first.contains("NODE_OPTIONS=--max-old-space-size=4096\n") && first.contains("GOMAXPROCS=\n"));
+        assert_eq!(windows_env::merge_before(&first, &now, &names), first, "a reinstall keeps the original values");
+    }
 
     #[test]
     fn rc_block_is_replaced_not_duplicated_and_removed_exactly() {

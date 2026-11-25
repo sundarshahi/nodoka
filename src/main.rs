@@ -29,6 +29,15 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dir = config::dir();
     match args.first().map(String::as_str) {
+        #[cfg(windows)]
+        Some("daemon") if args.iter().any(|a| a == "--detach") => {
+            if let Err(e) = detach(&std::env::current_exe().expect("own path")) {
+                eprintln!("nodoka: {e}");
+                std::process::exit(1);
+            }
+        }
+        #[cfg(windows)]
+        Some("daemon") if args.iter().any(|a| a == "--supervise") => supervise(),
         Some("daemon") => {
             let scope = args.iter().position(|a| a == "--test").and_then(|i| args.get(i + 1)).cloned();
             daemon::run(daemon::Options { dry_run: args.iter().any(|a| a == "--dry-run"), scope });
@@ -59,6 +68,38 @@ fn main() {
             eprintln!("nodoka: unknown command `{other}`\n\n{HELP}");
             std::process::exit(2);
         }
+    }
+}
+
+/// Windows: start the helper's supervisor with no window, apart from this terminal (closing it
+/// doesn't stop the helper).
+#[cfg(windows)]
+fn detach(bin: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new(bin)
+        .args(["daemon", "--supervise"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("start the background helper: {e}"))
+}
+
+/// Windows: what launchd's KeepAlive and systemd's Restart do elsewhere: run the helper and start
+/// it again if it stops on its own.
+#[cfg(windows)]
+fn supervise() {
+    let me = std::env::current_exe().expect("own path");
+    loop {
+        let ok = std::process::Command::new(&me).arg("daemon").status().is_ok_and(|s| s.success());
+        if ok {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(2));
     }
 }
 
