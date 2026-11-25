@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-26
+
 ### Added
 
 - Native Windows (x64 and ARM64): `irm …/install.ps1 | iex`. Everything but idle-server sleep; see
@@ -134,6 +136,7 @@ First release, for macOS and Linux (including WSL 2).
 - Editor setting that stops VS Code, Cursor, Windsurf and VSCodium from watching `node_modules`,
   `target`, `.venv` and similar folders.
 
-[Unreleased]: https://github.com/sundarshahi/nodoka/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sundarshahi/nodoka/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sundarshahi/nodoka/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sundarshahi/nodoka/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sundarshahi/nodoka/releases/tag/v0.1.0
