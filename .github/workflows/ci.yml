@@ -15,7 +15,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - name: Minimum supported Rust version (1.85)
@@ -28,7 +28,7 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo test --all-targets --locked
       - name: Node preload (worker cap, memory pressure, off switch)
         run: node preload/test.cjs
@@ -37,7 +37,7 @@ jobs:
     # the script WSL runs for the low-memory notice, on real Windows (text with quotes and $() in it)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - shell: powershell
         env:
           NODOKA_TITLE: Memory is full
