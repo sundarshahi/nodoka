@@ -65,7 +65,7 @@ pub fn pass(r: &Rules, in_use: &[String], now: u64) -> Vec<String> {
             let size = du(&w);
             if r.dry_run {
                 out.push(format!("clean           would remove worktree {} ({})", w.display(), gb(size)));
-            } else if git(&w, &["worktree", "remove", &real(&w)]).is_some() {
+            } else if remove_worktree(&w, &gitdir) {
                 out.push(format!(
                     "clean           removed worktree {} ({}, idle {} days; its commit is on a remote)",
                     w.display(),
@@ -83,6 +83,21 @@ pub fn pass(r: &Rules, in_use: &[String], now: u64) -> Vec<String> {
 fn real(w: &Path) -> String {
     let p = fs::canonicalize(w).map_or_else(|_| w.display().to_string(), |p| p.display().to_string());
     p.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(p)
+}
+
+/// `git worktree remove`, run from outside the worktree: Windows can't delete a folder that is
+/// any program's current folder, git's own included.
+fn remove_worktree(w: &Path, gitdir: &Path) -> bool {
+    let common =
+        fs::read_to_string(gitdir.join("commondir")).map_or_else(|_| gitdir.join("../.."), |c| gitdir.join(c.trim()));
+    let Some(outside) = w.parent() else { return false };
+    let o = Command::new("git")
+        .arg("--git-dir")
+        .arg(&common)
+        .args(["worktree", "remove", &real(w)])
+        .current_dir(outside)
+        .output();
+    o.is_ok_and(|o| o.status.success())
 }
 
 /// The gitdir of a linked worktree (a `.git` file, not a folder: never a main checkout).

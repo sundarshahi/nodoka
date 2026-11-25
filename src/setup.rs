@@ -413,7 +413,12 @@ const RUN_KEY: &str = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #[cfg(windows)]
 fn start_service(bin: &Path) -> Result<(), String> {
     let run = format!("\"{}\" daemon --detach", bin.display());
-    ps(&format!("Set-ItemProperty -Path '{RUN_KEY}' -Name {SERVICE} -Value $env:NODOKA_RUN"), &[("NODOKA_RUN", &run)])?;
+    // a fresh account may have no Run key yet; New-Item -Force would wipe an existing one's entries
+    let script = format!(
+        "if (-not (Test-Path '{RUN_KEY}')) {{ New-Item -Path '{RUN_KEY}' | Out-Null }}; \
+         Set-ItemProperty -Path '{RUN_KEY}' -Name {SERVICE} -Value $env:NODOKA_RUN"
+    );
+    ps(&script, &[("NODOKA_RUN", &run)])?;
     crate::detach(bin)?;
     println!("✓ background helper running; it starts again at login");
     Ok(())
