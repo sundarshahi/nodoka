@@ -4,10 +4,17 @@
 //! idle (do nothing), waitloop (idle, with a shell under it starting a `sleep` every second),
 //! leftover (use CPU after its parent is gone, for at most 60s), or hold:<MB> (hold that much memory).
 
+#![cfg_attr(not(unix), allow(unused))]
+
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
+#[cfg(not(unix))]
+fn main() {}
+
+#[cfg(unix)]
 #[allow(clippy::zombie_processes)] // the busy child lives as long as the job
 fn main() {
     let mode = std::env::var("FAKEJOB").unwrap_or_default();

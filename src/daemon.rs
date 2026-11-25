@@ -7,7 +7,7 @@ use crate::policy::{self, Action, Job, State, Sys};
 use crate::sys::{self, Proc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -64,6 +64,7 @@ pub struct Options {
     pub scope: Option<String>,
 }
 
+#[cfg(unix)]
 extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
 }
@@ -71,12 +72,19 @@ extern "C" fn on_signal(_: libc::c_int) {
 pub fn run(opts: Options) {
     // first thing: a test helper whose test run was killed stops too (and resumes what it paused)
     // instead of running forever. Parent 1 means it was orphaned before this line ran.
-    let parent = std::os::unix::process::parent_id();
-    let orphaned = || opts.scope.is_some() && (std::os::unix::process::parent_id() != parent || parent == 1);
-    unsafe {
-        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
-    }
+    #[cfg(unix)]
+    let orphaned = {
+        let parent = std::os::unix::process::parent_id();
+        unsafe {
+            libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+            libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+        }
+        let test = opts.scope.is_some();
+        move || test && (std::os::unix::process::parent_id() != parent || parent == 1)
+    };
+    // ponytail: on Windows a stopped helper leaves paused jobs to the next start, which resumes them
+    #[cfg(windows)]
+    let orphaned = || false;
     let home = config::dir();
     fs::create_dir_all(&home).expect("create the nodoka folder");
     rotate_log(&home);
@@ -437,7 +445,7 @@ pub fn run(opts: Options) {
                     Action::Slow(_, on) => sys::set_slow(q, on),
                     Action::Stop(_) => {
                         sys::signal(q, false);
-                        unsafe { libc::kill(q, libc::SIGTERM) };
+                        sys::terminate(q);
                     }
                 }
             }
@@ -529,7 +537,7 @@ pub fn run(opts: Options) {
                         size(mem)
                     ));
                     if !opts.dry_run {
-                        unsafe { libc::kill(p.pid, libc::SIGTERM) };
+                        sys::terminate(p.pid);
                     }
                 }
             }
@@ -816,11 +824,17 @@ fn notice(pid: i32, tr: &mut Tracked, st: &Sys) {
     };
     tr.noticed = tr.job.state;
     if let Some(path) = sys::tty_path(pid) {
-        use std::os::unix::fs::OpenOptionsExt;
-        if let Ok(mut f) = fs::OpenOptions::new().write(true).custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK).open(path)
+        #[cfg(unix)]
         {
-            let _ = write!(f, "\r\n{msg}\r\n");
+            use std::os::unix::fs::OpenOptionsExt;
+            let o = fs::OpenOptions::new().write(true).custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK).open(path);
+            if let Ok(mut f) = o {
+                let _ = write!(f, "\r\n{msg}\r\n");
+            }
         }
+        // ponytail: no terminal notices on Windows (tty_path finds none)
+        #[cfg(windows)]
+        let _ = (path, msg);
     }
 }
 
@@ -982,7 +996,7 @@ fn rotate_log(home: &Path) {
 
 pub fn log(msg: &str) {
     let line = format!("{} {msg}\n", clock());
-    if unsafe { libc::isatty(1) } == 1 {
+    if std::io::stdout().is_terminal() {
         print!("{line}");
     }
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(log_path()) {
@@ -991,18 +1005,7 @@ pub fn log(msg: &str) {
 }
 
 fn clock() -> String {
-    let t = sys::now() as _;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min,
-        tm.tm_sec
-    )
+    sys::clock()
 }
 
 #[cfg(test)]

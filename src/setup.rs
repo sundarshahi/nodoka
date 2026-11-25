@@ -31,7 +31,7 @@ pub const CAPS: &[(&str, &str)] = &[
 ];
 
 fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").expect("HOME is not set"))
+    PathBuf::from(std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).expect("HOME is not set"))
 }
 
 /// Node 24 made V8's young generation 4× bigger (64 MB semi-spaces). 16 is Node 22's default:
@@ -140,6 +140,11 @@ fn editor_settings() -> Vec<PathBuf> {
 }
 
 pub fn install(cfg: &Config) -> Result<(), String> {
+    if cfg!(windows) {
+        return Err("nodoka can't set itself up on Windows yet. Install it inside WSL 2 instead: \
+                    https://github.com/sundarshahi/nodoka/blob/main/docs/windows.md"
+            .into());
+    }
     let dir = config::dir();
     fs::create_dir_all(dir.join("bin")).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let bin = dir.join("bin/nodoka");
@@ -372,6 +377,19 @@ fn stop_service() {
 #[cfg(target_os = "linux")]
 pub fn service_running() -> bool {
     Command::new("systemctl").args(["--user", "is-active", "--quiet", SERVICE]).status().is_ok_and(|s| s.success())
+}
+
+#[cfg(windows)]
+fn start_service(_bin: &Path) -> Result<(), String> {
+    Err("starting at login isn't supported on Windows yet".into())
+}
+
+#[cfg(windows)]
+fn stop_service() {}
+
+#[cfg(windows)]
+pub fn service_running() -> bool {
+    false
 }
 
 #[cfg(test)]

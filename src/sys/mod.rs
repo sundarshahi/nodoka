@@ -5,15 +5,17 @@
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 #[cfg(target_os = "linux")]
 pub use linux::*;
 #[cfg(target_os = "macos")]
 pub use macos::*;
+#[cfg(windows)]
+pub use windows::*;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!(
-    "nodoka runs on macOS and Linux (including WSL 2) for now. Windows support is planned: see the roadmap in README.md."
-);
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+compile_error!("nodoka runs on macOS, Linux (including WSL 2) and Windows.");
 
 pub struct Proc {
     pub pid: i32,
@@ -115,9 +117,10 @@ fn notify_cmd(title: &str, body: &str, wsl: bool) -> std::process::Command {
         c.args(["-e", "on run a", "-e", "display notification (item 2 of a) with title (item 1 of a)"]);
         c.args(["-e", "end run", title, body]);
         c
-    } else if wsl {
-        // the helper runs as a systemd service: Windows isn't on its PATH
-        let mut c = Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
+    } else if wsl || cfg!(windows) {
+        // in WSL the helper runs as a systemd service: Windows isn't on its PATH
+        let ps = if wsl { "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" } else { "powershell.exe" };
+        let mut c = Command::new(ps);
         c.args(["-NoProfile", "-NonInteractive", "-Command", TOAST_PS1]);
         let carry = std::env::var("WSLENV").map_or(String::new(), |w| format!("{w}:"));
         c.env("NODOKA_TITLE", title).env("NODOKA_BODY", body).env("WSLENV", carry + "NODOKA_TITLE:NODOKA_BODY");
@@ -142,12 +145,14 @@ fn in_wsl_the_notice_is_a_windows_toast_with_the_text_outside_the_script() {
     assert_eq!(notify_cmd("t", "b", false).get_program().to_string_lossy(), "notify-send");
 }
 
+#[cfg(unix)]
 pub fn load1() -> f64 {
     let mut l = [0f64; 3];
     let n = unsafe { libc::getloadavg(l.as_mut_ptr(), 3) };
     if n > 0 { l[0] } else { 0.0 }
 }
 
+#[cfg(unix)]
 /// Lower CPU priority: nice 10. It yields to your apps only while cores are contested and costs
 /// nothing otherwise. (macOS's reversible background priority confines work to the efficiency
 /// cores: three parallel `next build`s took 40s instead of 8s.) An ordinary user can't raise
@@ -176,14 +181,39 @@ pub fn set_slow(pid: i32, on: bool) {
     }
 }
 
+#[cfg(unix)]
 /// Returns the error if the signal wasn't delivered.
 pub fn signal(pid: i32, stop: bool) -> Option<std::io::Error> {
     let r = unsafe { libc::kill(pid, if stop { libc::SIGSTOP } else { libc::SIGCONT }) };
     (r != 0).then(std::io::Error::last_os_error)
 }
 
+#[cfg(unix)]
 pub fn uid() -> u32 {
     unsafe { libc::getuid() }
+}
+
+/// Ask a process to exit (SIGTERM).
+#[cfg(unix)]
+pub fn terminate(pid: i32) {
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+}
+
+/// Local time for the log, `YYYY-MM-DD HH:MM:SS`.
+#[cfg(unix)]
+pub fn clock() -> String {
+    let t = now() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
 }
 
 pub fn cores() -> usize {
