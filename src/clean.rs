@@ -159,6 +159,7 @@ pub fn in_use() -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn sh(dir: &Path, cmd: &str) {
         let ok = Command::new("sh").arg("-c").arg(cmd).current_dir(dir).output().unwrap();
         assert!(ok.status.success(), "{cmd}: {}", String::from_utf8_lossy(&ok.stderr));
