@@ -64,8 +64,6 @@ fn times(pid: i32) -> Option<(u64, u64)> {
 }
 
 /// The user's processes: those in nodoka's own logon session (services and other users are in others).
-// ponytail: `tty` is true for every process, so nothing is treated as an agent's yet; telling a
-// terminal's process from an agent's needs its ancestry (Windows Terminal, VS Code's pty host)
 pub fn procs(_uid: u32) -> Vec<Proc> {
     let me = session(unsafe { GetCurrentProcessId() });
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -95,6 +93,7 @@ pub fn procs(_uid: u32) -> Vec<Proc> {
         }
         ok = unsafe { Process32NextW(snap.0, &mut e) } != 0;
     }
+    super::tty_by_ancestry(&mut out, crate::agents::NAMES);
     out
 }
 

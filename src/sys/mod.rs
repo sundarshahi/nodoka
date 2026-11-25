@@ -240,8 +240,60 @@ pub fn is_shell(comm: &str) -> bool {
             | "csh"
             | "nu"
             | "pwsh"
+            | "powershell"
+            | "cmd"
             | "elvish"
             | "xonsh"
             | "yash"
     )
+}
+
+/// Windows has no controlling terminal, so it comes from ancestry: a process counts as typed in a
+/// terminal unless a coding agent started it. An agent itself counts as the terminal's when a shell
+/// started it, and as an editor's (closable when idle) otherwise. A "parent" created after its
+/// child is a reused pid, not the parent.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn tty_by_ancestry(procs: &mut [Proc], agents: &[&str]) {
+    let by: std::collections::HashMap<i32, (i32, u64, String)> =
+        procs.iter().map(|p| (p.pid, (p.ppid, p.id, p.comm.to_ascii_lowercase()))).collect();
+    let is_agent = |c: &str| agents.contains(&c);
+    for p in procs.iter_mut() {
+        let (mut q, mut born, mut chain) = (p.ppid, p.id, vec![]);
+        for _ in 0..64 {
+            match by.get(&q) {
+                Some((pp, id, c)) if *id <= born => {
+                    chain.push(c.as_str());
+                    (q, born) = (*pp, *id);
+                }
+                _ => break,
+            }
+        }
+        p.tty = if chain.iter().any(|c| is_agent(c)) {
+            false
+        } else if is_agent(&p.comm.to_ascii_lowercase()) {
+            chain.first().is_some_and(|c| is_shell(c))
+        } else {
+            true
+        };
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn on_windows_an_agents_commands_are_not_the_terminals_but_yours_are() {
+    let p = |pid, ppid, id, comm: &str| Proc { pid, ppid, id, tty: false, stopped: false, comm: comm.into() };
+    let mut procs = vec![
+        p(1, 0, 1, "WindowsTerminal"),
+        p(2, 1, 2, "pwsh"),
+        p(3, 2, 3, "node"),   // npm run dev typed in the terminal
+        p(4, 2, 4, "claude"), // an agent started from the terminal
+        p(5, 4, 5, "bash"),
+        p(6, 5, 6, "node"), // the agent's build
+        p(7, 0, 7, "Code"),
+        p(8, 7, 8, "claude"), // an agent in VS Code
+        p(9, 4, 3, "node"),   // pid 4 reused: this one is older than its "parent"
+    ];
+    tty_by_ancestry(&mut procs, &["claude", "codex"]);
+    let tty: Vec<bool> = procs.iter().map(|p| p.tty).collect();
+    assert_eq!(tty, [true, true, true, true, false, false, true, false, true]);
 }
