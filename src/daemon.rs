@@ -140,6 +140,7 @@ pub fn run(opts: Options) {
     let mut peaks = load_peaks(&peaks_path);
     let mut apps: Vec<(String, u64)> = vec![];
     let mut last_notice = 0;
+    let mut short_since = 0;
     let mut st = Sys {
         now: sys::now(),
         level: pressure(),
@@ -692,10 +693,11 @@ pub fn run(opts: Options) {
         write_status(&home, &mut last_status, &status);
         // Memory full and no build, test or install to hold back: the apps hold it. nodoka never
         // touches them, so it says which ones, at most once an hour.
+        short_since = policy::short_since(short_since, st.level, st.last_critical, t);
         let builds = tracked.values().any(|tr| tr.job.kind.heavy() && !tr.job.ended);
         if cfg.notify_after_s > 0
-            && st.level >= 4
-            && t.saturating_sub(st.level_since) >= cfg.notify_after_s
+            && short_since > 0
+            && t.saturating_sub(short_since) >= cfg.notify_after_s
             && t.saturating_sub(last_notice) >= 3600
             && !builds
             && !apps.is_empty()

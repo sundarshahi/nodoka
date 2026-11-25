@@ -15,6 +15,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   agent starts it: more than 1.5 cores, or a core while holding 1 GB, for 30 seconds. It is then
   slowed, paused and resumed like a build, and never asked to exit.
 
+### Fixed
+
+- The memory-full notice never came: it waited for 2 unbroken minutes at critical, and memory
+  flips critical → warn every few seconds (98 times one evening). Short dips no longer restart it.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

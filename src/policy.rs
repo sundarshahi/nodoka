@@ -139,6 +139,19 @@ pub fn shares_budget(j: &Job) -> bool {
 }
 
 /// Memory is short and this job needed more last time than the system can hand out now.
+/// When memory became short and stayed so: critical now, with no calm stretch of
+/// `CALM_BEFORE_RESUME_S` since. A Mac flips critical → warn → critical every few seconds
+/// for hours (98 flips in one evening), so a clock reset by every flip never runs out. 0: not short.
+pub fn short_since(prev: u64, level: u32, last_critical: u64, now: u64) -> u64 {
+    if level >= 4 {
+        if prev == 0 { now } else { prev }
+    } else if now.saturating_sub(last_critical) >= CALM_BEFORE_RESUME_S {
+        0
+    } else {
+        prev
+    }
+}
+
 pub fn short_of_memory(j: &Job, level: u32, room: u64) -> bool {
     level >= 2 && j.expect > room
 }
@@ -483,6 +496,25 @@ mod tests {
         jobs.remove(1); // it finished
         s.now = 2005;
         assert_eq!(decide(&mut jobs, &mut s), vec![Action::Resume(0)], "then the next");
+    }
+
+    #[test]
+    fn memory_flipping_between_critical_and_warn_counts_as_short_until_it_stays_calm() {
+        let mut since = 0;
+        let mut last_critical = 0;
+        // critical 5 s, warn 3 s, over and over, for 3 minutes
+        for t in 1000..1180 {
+            let level = if t % 8 < 5 { 4 } else { 2 };
+            if level >= 4 {
+                last_critical = t;
+            }
+            since = short_since(since, level, last_critical, t);
+        }
+        assert_eq!(since, 1000, "the flips never reset it");
+        for t in 1180..1180 + CALM_BEFORE_RESUME_S {
+            since = short_since(since, 2, last_critical, t);
+        }
+        assert_eq!(since, 0, "20 calm seconds do");
     }
 
     #[test]
