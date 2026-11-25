@@ -1,6 +1,8 @@
 //! End-to-end: a real daemon governing real processes. Each test uses its own NODOKA_HOME and
 //! `--test <scope>`, so it only touches the fake jobs it starts — safe to run on a dev machine.
 
+#![cfg(unix)] // ponytail: the end-to-end tests drive Unix processes; Windows runs the unit tests
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

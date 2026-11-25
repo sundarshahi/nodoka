@@ -107,7 +107,8 @@ pub fn dir() -> PathBuf {
     if let Ok(d) = std::env::var("NODOKA_HOME") {
         return PathBuf::from(d);
     }
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".nodoka")
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"));
+    PathBuf::from(home.unwrap_or_else(|_| "/tmp".into())).join(".nodoka")
 }
 
 pub fn default_cpus() -> usize {

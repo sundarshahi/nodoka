@@ -7,21 +7,41 @@
 //! in crunch mode and an idle `python light.py`).
 
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+
+/// Windows has no argv[0] of its own choosing (the program file names the process) and no
+/// cheap parent check: there the name is left alone and only the 60 s limit ends a job.
+#[cfg(unix)]
+fn named<'a>(c: &'a mut Command, name: &str) -> &'a mut Command {
+    c.arg0(name)
+}
+#[cfg(not(unix))]
+fn named<'a>(c: &'a mut Command, _: &str) -> &'a mut Command {
+    c
+}
+#[cfg(unix)]
+fn parent_pid() -> u32 {
+    std::os::unix::process::parent_id()
+}
+#[cfg(not(unix))]
+fn parent_pid() -> u32 {
+    0
+}
 
 #[allow(clippy::zombie_processes)] // the busy child lives as long as the job
 fn main() {
     let mode = std::env::var("FAKEJOB").unwrap_or_default();
     // exit once orphaned (job killed, test run killed, manual run), so no mode ever outlives its test;
     // `leftover` is orphaned on purpose and has a hard 60s limit instead
-    let parent = std::os::unix::process::parent_id();
+    let parent = parent_pid();
     let leftover = mode == "leftover";
     std::thread::spawn(move || {
         let start = std::time::Instant::now();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let orphaned = std::os::unix::process::parent_id() != parent || parent == 1;
+            let orphaned = parent_pid() != parent || parent == 1;
             if (!leftover && orphaned) || start.elapsed().as_secs() >= 60 {
                 std::process::exit(0);
             }
@@ -30,8 +50,7 @@ fn main() {
     if mode == "burn" || leftover {
         if !leftover && std::env::var_os("FAKEJOB_CHILD").is_none() {
             let me = std::env::current_exe().unwrap();
-            Command::new(me)
-                .arg0("node")
+            named(&mut Command::new(me), "node")
                 .arg("worker.js")
                 .env("FAKEJOB_CHILD", "1")
                 .stdout(Stdio::null())
@@ -47,7 +66,11 @@ fn main() {
         // the children would be named `claude` too
         let me = std::env::var("FAKEJOB_BIN").map(std::path::PathBuf::from).unwrap();
         for (name, args, m) in [("java", ["-jar", "tiles.jar"], "crunch"), ("python", ["light.py", ""], "idle")] {
-            Command::new(&me).arg0(name).args(args.iter().filter(|a| !a.is_empty())).env("FAKEJOB", m).spawn().unwrap();
+            named(&mut Command::new(&me), name)
+                .args(args.iter().filter(|a| !a.is_empty()))
+                .env("FAKEJOB", m)
+                .spawn()
+                .unwrap();
         }
     }
     if mode == "crunch" {

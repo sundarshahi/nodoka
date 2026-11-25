@@ -48,10 +48,16 @@ turned off, and the only thing ever stopped is an agent's test run that has sat 
 
 ## Install
 
-macOS and Linux (including WSL 2; on Windows, see [docs/windows.md](docs/windows.md)):
+macOS and Linux (including WSL 2):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sundarshahi/nodoka/main/install.sh | sh
+```
+
+Windows (PowerShell; see [docs/windows.md](docs/windows.md)):
+
+```powershell
+irm https://raw.githubusercontent.com/sundarshahi/nodoka/main/install.ps1 | iex
 ```
 
 or build it yourself (Rust 1.85+):
@@ -144,16 +150,16 @@ file in the project was saved, and once it slept again, a real HTTP request was 
 
 | | macOS | Linux and WSL 2 | Windows |
 |---|---|---|---|
-| Fewer workers per tool, 2 while memory is short | ✓ | ✓ | planned |
-| Leaner memory settings for Node and Bun | ✓ | ✓ (and glibc's `MALLOC_ARENA_MAX=2`) | planned |
-| A few heavy jobs at a time | ✓ | ✓ | planned |
-| Idle servers sleep, wake on a request or saved file | ✓ (FSEvents) | ✓ (inotify) | planned |
-| Low-memory brake | ✓ (kernel memory-pressure level and swap-in rate) | ✓ (pressure-stall information and available memory) | planned |
-| Lower priority when every core is busy | ✓ (nice 10, kept until the job ends) | ✓ (nice 10, kept until the job ends) | planned |
-| Starts at login | LaunchAgent | systemd user service | |
+| Fewer workers per tool, 2 while memory is short | ✓ | ✓ | ✓ |
+| Leaner memory settings for Node and Bun | ✓ | ✓ (and glibc's `MALLOC_ARENA_MAX=2`) | ✓ |
+| A few heavy jobs at a time | ✓ | ✓ | ✓ (suspend and resume) |
+| Idle servers sleep, wake on a request or saved file | ✓ (FSEvents) | ✓ (inotify) | — (can't see a waiting request) |
+| Low-memory brake | ✓ (kernel memory-pressure level and swap-in rate) | ✓ (pressure-stall information and available memory) | ✓ (free memory, commit limit, page-in rate) |
+| Lower priority when every core is busy | ✓ (nice 10, kept until the job ends) | ✓ (nice 10, kept until the job ends) | ✓ (below-normal priority class) |
+| Starts at login | LaunchAgent | systemd user service | Run key, with a restarting supervisor |
 
 Tested on macOS 27 (Apple silicon) and Linux 6.10 (arm64). Release builds cover x86_64 and arm64 for
-both. On Windows, nodoka runs inside WSL 2: [setup guide](docs/windows.md). Native Windows support is the most-wanted contribution — see [CONTRIBUTING.md](CONTRIBUTING.md).
+both, and Windows (x64 and ARM64) natively or inside WSL 2: [Windows guide](docs/windows.md).
 
 ## Commands
 
