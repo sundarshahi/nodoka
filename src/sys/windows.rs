@@ -264,12 +264,7 @@ fn page_in_mbs() -> f64 {
     let mut v = PDH_FMT_COUNTERVALUE::default();
     let ok = unsafe { PdhCollectQueryData(q as _) } == 0
         && unsafe { PdhGetFormattedCounterValue(c as _, PDH_FMT_DOUBLE, std::ptr::null_mut(), &mut v) } == 0;
-    let mbs = if ok {
-        unsafe { v.Anonymous.doubleValue }
-        *4096.0 / (1 << 20) as f64
-    } else {
-        0.0
-    };
+    let mbs = if ok { (unsafe { v.Anonymous.doubleValue }) * 4096.0 / (1 << 20) as f64 } else { 0.0 };
     *last = (now, 0.7 * last.1 + 0.3 * mbs);
     last.1
 }
