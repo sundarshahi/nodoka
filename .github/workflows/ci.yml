@@ -36,7 +36,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all-targets --locked
 
@@ -45,7 +45,7 @@ jobs:
     # uninstall putting everything back
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo build --release --locked
       - shell: powershell
         run: |
