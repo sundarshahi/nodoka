@@ -135,11 +135,11 @@ fn in_wsl_the_notice_is_a_windows_toast_with_the_text_outside_the_script() {
     let c = notify_cmd("Memory is full", "firefox 7 GB; $(rm -rf ~)", true);
     assert!(c.get_program().to_string_lossy().ends_with("powershell.exe"));
     let env: Vec<_> = c.get_envs().map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned()))).collect();
-    let get = |k: &str| env.iter().find(|e| e.0 == k).and_then(|e| e.1.clone()).unwrap();
+    let get = |k: &str| env.iter().find(|e| e.0 == k).and_then(|e| e.1.clone()).unwrap().into_string().unwrap();
     assert_eq!(get("NODOKA_BODY"), "firefox 7 GB; $(rm -rf ~)");
     assert!(get("WSLENV").ends_with("NODOKA_TITLE:NODOKA_BODY"));
     assert!(c.get_args().all(|a| !a.to_string_lossy().contains("firefox")), "text never in the script");
-    assert_eq!(notify_cmd("t", "b", false).get_program(), "notify-send");
+    assert_eq!(notify_cmd("t", "b", false).get_program().to_string_lossy(), "notify-send");
 }
 
 pub fn load1() -> f64 {
