@@ -80,7 +80,9 @@ memory pressure: warn   load: 7.9 on 10 cores   builds/tests/installs at once: 2
 biggest apps (nodoka leaves these alone; closing one frees memory): firefox 7.5 GB, Code 6.1 GB
 ```
 
-While memory is short, the last line shows which apps hold the most of it.
+While memory is short, the last line shows which apps hold the most of it. If memory stays critically
+low for 2 minutes with no build, test or install running, a notification names them too (at most once
+an hour; `notify_after_minutes = 0` turns it off).
 
 If something you started in a terminal has to wait, that terminal gets one line saying why:
 
@@ -180,6 +182,7 @@ memory_brake = slow         # at critical memory: slow lane (default) or `pause`
 stop_idle_tests_minutes = 30      # an agent's test run idle this long is asked to exit (0: never)
 stop_long_tests_minutes = 30      # …or still running this long while memory is critical (0: never)
 close_idle_agents_after_hours = 24  # close agent sessions (Claude Code, Codex) idle this long while memory is short (off when unset)
+notify_after_minutes = 2    # memory critical this long, no build running: notify which apps hold it (0: never)
 clean_dirs = ~/worktrees    # folders of git worktrees to clean when idle (off when unset)
 clean_caches_after_hours = 24     # idle this long: delete node_modules, .next… (0: never)
 remove_worktrees_after_days = 7   # idle this long: remove the worktree if nothing is lost (0: never)

@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A notification names the biggest apps when memory stays critically low for 2 minutes and no
+  build, test or install is running, at most once an hour (`notify_after_minutes`, 0 turns it off).
 - Leftover guard: a process whose parent is gone that keeps a core busy for 10 minutes gets lower
   priority and is listed in `nodoka status` with the command that stops it
   (`leftover_busy_minutes`, 0 turns it off).

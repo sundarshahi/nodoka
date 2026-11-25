@@ -28,6 +28,8 @@ pub struct Config {
     pub stop_long_tests_s: u64,
     /// Close an agent session idle this long while memory is short; 0: never (they're only listed).
     pub close_idle_agents_s: u64,
+    /// Memory critical this long with no build to hold back: a notice naming the biggest apps; 0: never.
+    pub notify_after_s: u64,
     pub clean_caches_after_s: u64,
     pub remove_worktrees_after_s: u64,
     pub custom: Custom,
@@ -80,6 +82,11 @@ pub const TEMPLATE: &str = "\
 # Off by default; idle ones are listed in `nodoka status` either way. 0: never.
 # close_idle_agents_after_hours = 24
 
+# When memory stays critically low this many minutes and no build, test or install is running, the
+# apps you have open hold it, and nodoka never touches them: a notification names the biggest ones,
+# at most once an hour. 0 turns it off.
+# notify_after_minutes = 2
+
 # Folders holding git worktrees (comma-separated). In a worktree idle this long — no git activity,
 # no program working in it — folders git ignores and a tool rebuilds (node_modules, .next, .turbo…)
 # are deleted. After `remove_worktrees_after_days` the worktree itself goes, but only if nothing
@@ -122,6 +129,7 @@ pub fn load(path: &Path) -> Config {
         stop_idle_tests_s: 1800,
         stop_long_tests_s: 1800,
         close_idle_agents_s: 0,
+        notify_after_s: 120,
         clean_caches_after_s: 24 * 3600,
         remove_worktrees_after_s: 7 * 86400,
         custom: Custom::new(),
@@ -154,6 +162,8 @@ pub fn load(path: &Path) -> Config {
             ("stop_long_tests_seconds", Ok(v)) => c.stop_long_tests_s = *v,
             ("close_idle_agents_after_hours", Ok(v)) => c.close_idle_agents_s = v * 3600,
             ("close_idle_agents_after_seconds", Ok(v)) => c.close_idle_agents_s = *v,
+            ("notify_after_minutes", Ok(v)) => c.notify_after_s = v * 60,
+            ("notify_after_seconds", Ok(v)) => c.notify_after_s = *v,
             ("clean_caches_after_hours", Ok(v)) => c.clean_caches_after_s = v * 3600,
             ("remove_worktrees_after_days", Ok(v)) => c.remove_worktrees_after_s = v * 86400,
             ("clean_dirs", _) => {
@@ -192,6 +202,8 @@ pub fn load(path: &Path) -> Config {
                         | "stop_long_tests_seconds"
                         | "close_idle_agents_after_hours"
                         | "close_idle_agents_after_seconds"
+                        | "notify_after_minutes"
+                        | "notify_after_seconds"
                         | "clean_caches_after_hours"
                         | "remove_worktrees_after_days"
                 ) =>

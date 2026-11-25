@@ -537,6 +537,22 @@ fn a_freezing_machine_pauses_even_a_slowed_build() {
 }
 
 #[test]
+fn memory_full_with_no_build_running_names_the_biggest_apps_once() {
+    let d = Daemon::start_env("fullmem", "notify_after_seconds = 2", &[("NODOKA_PRESSURE", "4")]);
+    let mut app = Job(d.job(&["bigapp"], "hold:400"));
+    let mut build = Job(d.job(NEXT_BUILD, "burn"));
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(!d.log().contains("memory is full"), "a build is running: nodoka handles that\n{}", d.log());
+    build.0.kill().ok();
+    build.0.wait().ok();
+    let noticed = eventually(20, || d.log().contains("notice          memory is full:"));
+    assert!(noticed, "no notice:\n{}", d.log());
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(d.log().matches("memory is full").count(), 1, "at most once an hour:\n{}", d.log());
+    app.0.kill().ok();
+}
+
+#[test]
 fn an_agent_session_idle_too_long_is_closed_while_memory_is_short_but_a_working_one_is_not() {
     let d = Daemon::start_env("agents", "close_idle_agents_after_seconds = 3", &[("NODOKA_PRESSURE", "2")]);
     let mut idle = Job(d.agent("claude", "idle"));

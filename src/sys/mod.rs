@@ -96,6 +96,23 @@ pub fn project_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
     ok(root).then(|| root.to_path_buf())
 }
 
+/// A desktop notification, in the background (it never holds up the daemon). Text goes in as
+/// arguments, never into the script. Linux without `notify-send`: nothing (it's in the log).
+pub fn notify(title: &str, body: &str) {
+    let mut c = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("osascript");
+        c.args(["-e", "on run a", "-e", "display notification (item 2 of a) with title (item 1 of a)"]);
+        c.args(["-e", "end run", title, body]);
+        c
+    } else {
+        let mut c = std::process::Command::new("notify-send");
+        c.args(["--app-name=nodoka", title, body]);
+        c
+    };
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    std::thread::spawn(move || c.status());
+}
+
 pub fn load1() -> f64 {
     let mut l = [0f64; 3];
     let n = unsafe { libc::getloadavg(l.as_mut_ptr(), 3) };

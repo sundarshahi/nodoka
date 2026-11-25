@@ -168,6 +168,11 @@ Things that make recognition hard, and how they are handled:
   are never closed. A Claude Code session's idle time starts at its last chat write (its
   `sessions/<pid>.json` names the chat file), so sessions open before nodoka started are judged
   right away; for others it counts from when nodoka first saw them.
+- **Apps notice** (`notify_after_minutes`, 2). With no build, test or install running and memory
+  critical for 2 minutes, nodoka has nothing to hold back: the apps hold the memory (a 16 GB Mac
+  lagged with VS Code at 13 GB and Firefox at 7 GB while no dev job ran). nodoka never touches apps,
+  so it posts a notification naming the three biggest (`osascript` on macOS, `notify-send` on Linux),
+  at most once an hour. The notice is also written to the log.
 - **Low-memory brake** (`memory_brake = pause`). One job is paused every 5 seconds, newest first,
   busy builds only — a paused test fails its timeouts, a paused install would have its downloads time
   out, and pausing an idle job (a `webpack --watch` between rebuilds) stops nothing from growing. The

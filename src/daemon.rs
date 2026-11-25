@@ -118,6 +118,7 @@ pub fn run(opts: Options) {
     let peaks_path = home.join("peaks");
     let mut peaks = load_peaks(&peaks_path);
     let mut apps: Vec<(String, u64)> = vec![];
+    let mut last_notice = 0;
     let mut st = Sys {
         now: sys::now(),
         level: pressure(),
@@ -603,6 +604,24 @@ pub fn run(opts: Options) {
                 &format!("biggest apps (nodoka leaves these alone; closing one frees memory): {}\n", list.join(", "));
         }
         write_status(&home, &mut last_status, &status);
+        // Memory full and no build, test or install to hold back: the apps hold it. nodoka never
+        // touches them, so it says which ones, at most once an hour.
+        let builds = tracked.values().any(|tr| tr.job.kind.heavy() && !tr.job.ended);
+        if cfg.notify_after_s > 0
+            && st.level >= 4
+            && t.saturating_sub(st.level_since) >= cfg.notify_after_s
+            && t.saturating_sub(last_notice) >= 3600
+            && !builds
+            && !apps.is_empty()
+        {
+            last_notice = t;
+            let list: Vec<String> = apps.iter().take(3).map(|(n, m)| format!("{n} {}", size(*m))).collect();
+            let body = format!("{}. Quit one you aren't using to stop the lag.", list.join(", "));
+            log(&format!("notice          memory is full: {body}"));
+            if opts.scope.is_none() && !opts.dry_run {
+                sys::notify("Memory is full", &body);
+            }
+        }
         let slice: Vec<i32> = if opts.dry_run {
             vec![]
         } else {
