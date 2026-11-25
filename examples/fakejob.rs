@@ -2,7 +2,9 @@
 //! command line (for example `node …/next/dist/bin/next build`) and choose what it does with
 //! FAKEJOB=burn (use CPU, with one busy child process), serve:<port>[:<delay ms>] (answer TCP requests),
 //! idle (do nothing), waitloop (idle, with a shell under it starting a `sleep` every second),
-//! leftover (use CPU after its parent is gone, for at most 60s), or hold:<MB> (hold that much memory).
+//! leftover (use CPU after its parent is gone, for at most 60s), hold:<MB> (hold that much memory),
+//! crunch (two busy threads, no child), or agent (an agent session that starts `java -jar tiles.jar`
+//! in crunch mode and an idle `python light.py`).
 
 #![cfg_attr(not(unix), allow(unused))]
 
@@ -43,6 +45,24 @@ fn main() {
                 .spawn()
                 .unwrap();
         }
+        loop {
+            std::hint::black_box((0..100_000u64).sum::<u64>());
+        }
+    }
+    if mode == "agent" {
+        // the process name comes from the program file: started from this copy named `claude`,
+        // the children would be named `claude` too
+        let me = std::env::var("FAKEJOB_BIN").map(std::path::PathBuf::from).unwrap();
+        for (name, args, m) in [("java", ["-jar", "tiles.jar"], "crunch"), ("python", ["light.py", ""], "idle")] {
+            Command::new(&me).arg0(name).args(args.iter().filter(|a| !a.is_empty())).env("FAKEJOB", m).spawn().unwrap();
+        }
+    }
+    if mode == "crunch" {
+        std::thread::spawn(|| {
+            loop {
+                std::hint::black_box((0..100_000u64).sum::<u64>());
+            }
+        });
         loop {
             std::hint::black_box((0..100_000u64).sum::<u64>());
         }

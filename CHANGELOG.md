@@ -5,6 +5,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Heavy work no rule knows (a Java map-tile build, a data script) is found by its load when a coding
+  agent starts it: more than 1.5 cores, or a core while holding 1 GB, for 30 seconds. It is then
+  slowed, paused and resumed like a build, and never asked to exit.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

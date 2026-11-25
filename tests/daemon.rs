@@ -62,6 +62,7 @@ fn fake(scope: &str, exe: &Path, dir: &Path, argv: &[&str], mode: &str) -> Child
     {
         let mut c = Command::new(exe);
         c.current_dir(dir).arg0(argv[0]).args(&argv[1..]).env("NODOKA_TEST", scope).env("FAKEJOB", mode);
+        c.env("FAKEJOB_BIN", fakejob());
         c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         unsafe {
             c.pre_exec(|| {
@@ -565,6 +566,24 @@ fn an_agent_session_idle_too_long_is_closed_while_memory_is_short_but_a_working_
     std::thread::sleep(Duration::from_secs(6));
     assert!(working.0.try_wait().unwrap().is_none(), "the working session was closed:\n{}", d.log());
     assert!(!d.log().contains(&format!("agent session pid {}", working.0.id())), "{}", d.log());
+}
+
+#[test]
+fn heavy_work_no_rule_knows_is_found_when_an_agent_starts_it() {
+    let d = Daemon::start_env(
+        "norule",
+        "",
+        &[("NODOKA_PRESSURE", "4"), ("NODOKA_HEAVY_WINDOW", "6"), ("NODOKA_HEAVY_CORES", "0.3")],
+    );
+    let _agent = Job(d.agent("claude", "agent"));
+    let found = eventually(40, || d.log().contains("found           build pid"));
+    assert!(found, "the busy java wasn't found:\n{}", d.log());
+    let log = d.log();
+    assert!(log.contains("tiles.jar"), "{log}");
+    assert!(!log.contains("light.py"), "an idle program is left alone:\n{log}");
+    let slowed = eventually(15, || d.log().contains("slow lane       build pid"));
+    assert!(slowed, "found work is handled like a build:\n{}", d.log());
+    assert!(!d.log().contains("pause "), "it was already running: never queued like a new start\n{}", d.log());
 }
 
 #[test]
