@@ -52,10 +52,11 @@ impl Daemon {
 
 /// A fake `next build`: the helper copied as node.exe (Windows names a process by its program file).
 fn build(scope: &str, mode: &str) -> Kill {
-    let dir = std::env::temp_dir().join(format!("nodoka-win-bin-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let node = dir.join("node.exe");
-    if !node.exists() {
+    // once per run: the tests run in parallel, and Windows can't overwrite a program that's running
+    static NODE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let node = NODE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("nodoka-win-bin-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
         // `cargo test --all-targets` builds examples as test binaries under another name
         let fake = Path::new(BIN).parent().unwrap().join("examples").join("fakejob.exe");
         if !fake.exists() {
@@ -66,9 +67,11 @@ fn build(scope: &str, mode: &str) -> Kill {
                 .is_ok_and(|s| s.success());
             assert!(ok, "could not build the fakejob example");
         }
+        let node = dir.join("node.exe");
         fs::copy(&fake, &node).unwrap_or_else(|e| panic!("copy {}: {e}", fake.display()));
-    }
-    let child = Command::new(&node)
+        node
+    });
+    let child = Command::new(node)
         .args(["/app/node_modules/next/dist/bin/next", "build"])
         .env("NODOKA_TEST", scope)
         .env("FAKEJOB", mode)
