@@ -1,6 +1,6 @@
 [package]
 name = "nodoka"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Keeps your computer responsive while dev servers, builds, installs and AI coding agents run — any stack, no new commands."
