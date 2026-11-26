@@ -337,7 +337,7 @@ pub fn run(opts: Options) {
             let tr = tracked.entry(key).or_insert_with(|| {
                 let label = s.map(|s| s.label.clone()).unwrap_or_default();
                 let place = kind.heavy().then(|| sys::cwd(pid)).flatten().map(|c| (c, label.clone()));
-                let expect = place.as_ref().and_then(|p| peaks.get(p)).copied().unwrap_or(0);
+                let expect = place.as_ref().map_or(0, |p| expected(&peaks, p));
                 Tracked {
                     // jobs already running when nodoka starts are left as they are
                     job: Job {
@@ -1035,6 +1035,26 @@ pub fn recover(path: &Path) {
 }
 
 /// One line per command and folder: `<bytes>\t<command>\t<folder>`.
+/// The program a label runs, past its launcher: `npx tsc --noEmit` and `npm exec tsc -p .` are tsc.
+fn tool(label: &str) -> &str {
+    const LAUNCHERS: &[&str] = &["npx", "npm", "pnpm", "yarn", "bunx", "bun", "exec", "dlx", "x", "run", "env", "--"];
+    label.split_whitespace().find(|w| !LAUNCHERS.contains(w) && !w.starts_with('-')).unwrap_or(label)
+}
+
+/// What this command will need: what it used last time in this folder, or else the middle of
+/// what the same program used anywhere. An agent's new worktree, or `npx tsc` where it ran
+/// `npm exec tsc` before, has no exact record, and counting that as "nothing" let two 5 GB type
+/// checks start side by side.
+fn expected(peaks: &HashMap<(PathBuf, String), u64>, place: &(PathBuf, String)) -> u64 {
+    if let Some(&b) = peaks.get(place) {
+        return b;
+    }
+    let t = tool(&place.1);
+    let mut same: Vec<u64> = peaks.iter().filter(|((_, l), _)| tool(l) == t).map(|(_, &b)| b).collect();
+    same.sort_unstable();
+    same.get(same.len() / 2).copied().unwrap_or(0)
+}
+
 fn load_peaks(path: &Path) -> HashMap<(PathBuf, String), u64> {
     let text = fs::read_to_string(path).unwrap_or_default();
     text.lines()
@@ -1108,5 +1128,22 @@ mod tests {
             "a tab can't split a line"
         );
         assert!(load_peaks(Path::new("/nonexistent/peaks")).is_empty());
+
+        // no record for this folder or this spelling: what the same program usually needs
+        let gb = |n: u64| n << 30;
+        let mut seen = HashMap::new();
+        for (dir, label, b) in [
+            ("/w/a", "npm exec tsc --noEmit", gb(5)),
+            ("/w/b", "tsc --noEmit -p .", gb(6)),
+            ("/w/c", "npm exec tsc --noEmit -p tsconfig.json", gb(4)),
+            ("/w/a", "npm exec eslint src", gb(1)),
+        ] {
+            seen.insert((PathBuf::from(dir), label.to_string()), b);
+        }
+        let want = |dir: &str, label: &str| expected(&seen, &(PathBuf::from(dir), label.to_string()));
+        assert_eq!(want("/w/a", "npm exec tsc --noEmit"), gb(5), "its own record first");
+        assert_eq!(want("/w/new", "npx tsc --noEmit"), gb(5), "a new worktree, another launcher: tsc's middle");
+        assert_eq!(want("/w/new", "npx eslint ."), gb(1));
+        assert_eq!(want("/w/new", "cargo build"), 0, "never seen: unknown");
     }
 }

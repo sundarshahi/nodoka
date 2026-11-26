@@ -464,11 +464,15 @@ fn a_type_check_that_needed_more_memory_than_is_free_waits_before_it_starts_next
     assert!(eventually(8, || stopped(pid2) && d.status().contains("waiting for memory")), "{}", d.status());
     assert!(d.log().contains("last time"), "{}", d.log());
 
-    // the same command in another folder has no record: it runs
+    // the same program in a new folder (an agent's new worktree) needs about the same: it waits too
     let other = Job(d.job_in(&there, &tsc, "idle"));
+    let pid3 = other.0.id() as i32;
+    assert!(eventually(8, || stopped(pid3)), "a new worktree's type check started unchecked:\n{}", d.status());
+    // a program never seen anywhere has nothing to go on: it runs
+    let fresh = Job(d.job_in(&there, &["node", "/app/node_modules/vite/bin/vite.js", "build"], "idle"));
     std::thread::sleep(Duration::from_secs(3));
-    assert!(!stopped(other.0.id() as i32), "the record is per folder");
-    drop((second, other));
+    assert!(!stopped(fresh.0.id() as i32), "never seen: it runs");
+    drop((second, other, fresh));
     let _ = fs::remove_dir_all(&base);
 }
 
