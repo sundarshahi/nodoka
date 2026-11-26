@@ -545,7 +545,13 @@ pub fn run(opts: Options) {
                         if t.saturating_sub(tr.job.state_since) >= 2 && !tr.resumed_seen {
                             tr.resumed_seen = true;
                             let why = err.map_or("stopped it again".into(), |e| format!("can't stop it: {e}"));
-                            log(&format!("found running   pid {q} in paused job {} — {why}", tr.label));
+                            // CPU used tells a real resume from a stop still pending (a process waiting on a page-in
+                            // can't stop until the read ends, and doesn't run meanwhile)
+                            log(&format!(
+                                "found running   pid {q} in paused job {} — {why} (the job used {} ms CPU in the last second)",
+                                tr.label,
+                                tr.used / 1_000_000
+                            ));
                         }
                     }
                 }
