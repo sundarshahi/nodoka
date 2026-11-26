@@ -190,6 +190,16 @@ pub fn signal(pid: i32, stop: bool) -> Option<std::io::Error> {
     (r != 0).then(std::io::Error::last_os_error)
 }
 
+/// Bytes this user can still write on the disk holding `p`.
+#[cfg(unix)]
+#[allow(clippy::useless_conversion)] // the field types differ between macOS and Linux
+pub fn disk_free(p: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok()?;
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    (unsafe { libc::statvfs(c.as_ptr(), &mut s) } == 0).then(|| u64::from(s.f_bavail) * u64::from(s.f_frsize))
+}
+
 #[cfg(unix)]
 pub fn uid() -> u32 {
     unsafe { libc::getuid() }

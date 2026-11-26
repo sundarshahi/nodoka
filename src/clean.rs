@@ -22,6 +22,15 @@ pub struct Rules {
     pub dry_run: bool,
 }
 
+/// Less free than this, caches in worktrees idle an hour go, not after a day: a disk with 2.5 GB
+/// left held 19 GB of node_modules in worktrees idle 6–22 hours.
+pub const LOW_DISK: u64 = 25 << 30;
+
+/// How long a worktree sits idle before its caches go, given the free disk space.
+pub fn caches_after(configured: u64, free: Option<u64>) -> u64 {
+    if configured > 0 && free.is_some_and(|f| f < LOW_DISK) { configured.min(3600) } else { configured }
+}
+
 /// One pass. `in_use`: folders a running process works in or names on its command line.
 /// Returns log lines.
 pub fn pass(r: &Rules, in_use: &[String], now: u64) -> Vec<String> {
@@ -183,6 +192,17 @@ mod tests {
     fn git_ok(dir: &Path, args: &[&str]) {
         let o = Command::new("git").args(args).current_dir(dir).output().unwrap();
         assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+
+    #[test]
+    fn a_nearly_full_disk_clears_caches_after_an_hour_idle_not_a_day() {
+        let day = 24 * 3600;
+        assert_eq!(caches_after(day, Some(30 << 30)), day, "room left: the usual wait");
+        assert_eq!(caches_after(day, Some(2 << 30)), 3600);
+        assert_eq!(caches_after(600, Some(2 << 30)), 600, "never later than configured");
+        assert_eq!(caches_after(0, Some(2 << 30)), 0, "off stays off");
+        assert_eq!(caches_after(day, None), day, "unknown: the usual wait");
+        assert!(sys::disk_free(&std::env::temp_dir()).is_some_and(|f| f > 0), "free space is readable here");
     }
 
     #[test]

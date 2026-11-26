@@ -5,6 +5,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Worktree cleaning watches free disk space: under 25 GB free it checks every 5 minutes and clears
+  dependency folders in worktrees idle an hour, not a day. A disk had run down to 2.5 GB free while
+  19 GB of `node_modules` sat in worktrees idle 6–22 hours.
+
 ### Fixed
 
 - A type check in an agent's new worktree, or run as `npx tsc` where it ran as `npm exec tsc` before,

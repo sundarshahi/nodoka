@@ -91,6 +91,7 @@ pub const TEMPLATE: &str = "\
 # no program working in it — folders git ignores and a tool rebuilds (node_modules, .next, .turbo…)
 # are deleted. After `remove_worktrees_after_days` the worktree itself goes, but only if nothing
 # would be lost: no changes, its commit is on a remote, no other ignored files (.env). 0: never.
+# Under 25 GB free on that disk, caches go after an hour idle instead.
 # clean_dirs = ~/worktrees
 # clean_caches_after_hours = 24
 # remove_worktrees_after_days = 7

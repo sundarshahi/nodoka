@@ -193,7 +193,9 @@ Things that make recognition hard, and how they are handled:
   job at a time. A paused job keeps its memory, and its agent waits on it; before this, two type
   checks held 7 GB for 3 hours.
 - **Disk cleaning** (`clean_dirs`, off when unset). A separate thread, hourly, so the 1-second loop
-  never waits on it. For each linked git worktree (a `.git` *file*; main checkouts are never touched)
+  never waits on it. When the disk holding the first folder has less than 25 GB free it runs every 5
+  minutes and caches go after an hour idle instead of `clean_caches_after_hours` (a disk with 2.5 GB
+  left held 19 GB of `node_modules` in worktrees idle 6–22 hours). For each linked git worktree (a `.git` *file*; main checkouts are never touched)
   in those folders: idle means no git activity (the worktree's `index`, `HEAD` and `logs/HEAD` in its
   git folder) for `clean_caches_after_hours` (24) and no process of yours working in it or naming it on
   its command line. Then the ignored entries `git status --ignored` lists whose name is a rebuildable

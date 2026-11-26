@@ -289,6 +289,16 @@ pub fn cwd(pid: i32) -> Option<PathBuf> {
     params(pid).map(|p| p.1)
 }
 
+/// Bytes this user can still write on the disk holding `p`.
+pub fn disk_free(p: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let w: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+    let mut free = 0u64;
+    (unsafe { GetDiskFreeSpaceExW(w.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) } != 0)
+        .then_some(free)
+}
+
 /// Unused on Windows: it wakes sleeping servers, and they don't sleep here (see `sockets`).
 pub struct Watch;
 

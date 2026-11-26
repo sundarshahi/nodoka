@@ -37,7 +37,8 @@ that keeps that from happening:
   1–2 GB of dependencies into each. List the folders that hold them in `clean_dirs`, and in a worktree
   idle for a day nodoka deletes what an install or build recreates (`node_modules`, `.next`,
   `.turbo`…, only if git ignores it). After a week the worktree itself goes, but only when nothing
-  would be lost: no changes, its commit is on a remote, no other ignored files such as `.env`.
+  would be lost: no changes, its commit is on a remote, no other ignored files such as `.env`. When
+  the disk has less than 25 GB free, the wait for dependency folders drops from a day to an hour.
 - **Agent work yields to you.** While every core is busy, builds, tests, headless browsers and dev
   servers that coding agents started get lower priority; ones you started in a terminal keep theirs.
 - **A CPU budget for agents.** Builds, installs and dev servers that agents started share at most half
