@@ -28,6 +28,10 @@ Settings: ~/.nodoka/config    Log: ~/.nodoka/log
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dir = config::dir();
+    #[cfg(unix)] // `nodoka status | head` ends quietly, like any Unix tool, instead of panicking
+    if args.first().is_none_or(|a| a != "daemon") {
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    }
     match args.first().map(String::as_str) {
         #[cfg(windows)]
         Some("daemon") if args.iter().any(|a| a == "--detach") => {

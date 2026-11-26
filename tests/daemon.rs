@@ -626,3 +626,12 @@ fn a_build_paused_for_memory_stays_paused_across_a_restart() {
     assert!(d.status().contains("paused: low memory"), "not taken over:\n{}\n{}", d.status(), d.log());
     assert!(!stopped(other.0.id() as i32), "a dev server is never held");
 }
+
+#[test]
+fn output_into_a_reader_that_stopped_reading_ends_quietly() {
+    let mut c = Command::new(BIN).arg("help").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    drop(c.stdout.take()); // like `| head` that already quit
+    let out = c.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked"), "{err}");
+}

@@ -13,6 +13,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - An idle Gradle, Kotlin or Bazel build server was paused like a dev server; paused, it kept 4.7 GB in
   swap for hours and never reached its own idle exit. It is now asked to exit; the next build starts
   a fresh one.
+- `nodoka status | head` (or any reader that stops early) crashed with a broken-pipe panic; it now
+  ends quietly.
 
 ## [0.3.0] - 2026-11-26
 
