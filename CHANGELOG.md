@@ -10,6 +10,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A type check in an agent's new worktree, or run as `npx tsc` where it ran as `npm exec tsc` before,
   counted as needing no memory, so two 5 GB type checks started side by side. With no exact record,
   a command now counts as needing what the same program usually needs.
+- An idle Gradle, Kotlin or Bazel build server was paused like a dev server; paused, it kept 4.7 GB in
+  swap for hours and never reached its own idle exit. It is now asked to exit; the next build starts
+  a fresh one.
 
 ## [0.3.0] - 2026-11-26
 

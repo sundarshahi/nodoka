@@ -343,10 +343,17 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         }
     }
 
-    // 5. idle servers sleep; a waiting connection or request wakes them
+    // 5. idle servers sleep; a waiting connection or request wakes them. An idle build server
+    //    (Gradle, Kotlin, Bazel daemon) is asked to exit instead: paused, it kept 4.7 GB in swap for
+    //    hours and could never reach its own idle exit. The next build starts a fresh one.
     for &i in &order {
         let j = &mut jobs[i];
-        if j.state == State::Running && sys.idle_s > 0 && j.sleepable && j.pausable && j.idle_for_s >= sys.idle_s {
+        let idle =
+            j.state == State::Running && sys.idle_s > 0 && j.sleepable && j.pausable && j.idle_for_s >= sys.idle_s;
+        if idle && j.kind == Kind::Build && !j.terminal && !j.keep && !j.ended {
+            j.ended = true;
+            out.push(Action::Stop(i));
+        } else if idle && j.kind != Kind::Build {
             set(j, State::IdlePaused);
             out.push(Action::Pause(i));
         } else if j.state == State::IdlePaused && j.wake {
@@ -773,6 +780,16 @@ mod tests {
         s.idle_s = 0; // idle sleep switched off
         jobs[0].wake = false;
         assert!(decide(&mut jobs, &mut s).is_empty());
+    }
+
+    #[test]
+    fn an_idle_build_server_is_asked_to_exit_not_paused_where_it_would_keep_its_memory() {
+        let mut gradle = job(Kind::Build, 3000);
+        (gradle.sleepable, gradle.idle_for_s) = (true, 601);
+        let mut jobs = vec![gradle];
+        let mut s = sys(5000, 1, 2);
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Stop(0)]);
+        assert!(decide(&mut jobs, &mut s).is_empty(), "asked once");
     }
 
     #[test]

@@ -20,6 +20,7 @@ that keeps that from happening:
   timeouts) but count toward the limit.
 - **Idle servers sleep.** A dev server nobody has used for 10 minutes is paused; the next request — or
   the next file you save in its project — wakes it in under a second, so hot reload keeps working.
+  An idle Gradle, Kotlin or Bazel build server is asked to exit instead; the next build starts a new one.
 - **Big jobs wait for memory before they start.** nodoka remembers how much memory each build, type
   check or install needed the last time it ran in that folder. While memory is short, the next run
   waits for room (at most a minute) instead of starting, growing and fighting your apps for memory.

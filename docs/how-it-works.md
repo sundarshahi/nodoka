@@ -208,6 +208,9 @@ Things that make recognition hard, and how they are handled:
   loop) sleeps after three times that. Watchers without a port (`tsc --watch`) never sleep, because
   nothing could wake them. Servers started with `NODE_ENV=production` (and the Rails, Rack, Mix and
   ASP.NET equivalents) never sleep.
+  An idle build server (the Gradle and Kotlin daemons, Bazel's server) is asked to exit instead of
+  paused: paused, it keeps its memory and never reaches its own idle exit, and the next build starts a
+  fresh one in seconds.
 - **Busy CPU.** When the 1-minute load is above the core count, heavy jobs move to low priority, and back
   when the load drops. Jobs started from a terminal are left at normal priority: a person is watching.
 

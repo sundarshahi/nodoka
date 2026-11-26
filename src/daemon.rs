@@ -863,6 +863,10 @@ fn why(j: &Job, st: &Sys) -> String {
         State::Queued => "enough heavy jobs are running; it starts when one finishes".into(),
         State::PressurePaused => "memory is critically low".into(),
         State::IdlePaused => "idle; the next request or saved file wakes it".into(),
+        State::Running if j.ended && j.sleepable && j.kind == Kind::Build => {
+            "an idle build server holds its memory even paused; asked it to exit (the next build starts a fresh one)"
+                .into()
+        }
         State::Running if j.ended && j.kind != Kind::Test => {
             "held 10 minutes for memory, long after its agent stopped waiting; asked to exit (it can be run again)"
                 .into()
