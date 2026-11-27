@@ -7,12 +7,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A command that needed under 512 MB last time (rubocop on a few files: 100 MB) starts at once
+  instead of queuing behind builds and tests, and takes no slot. Seven agent lint runs had queued;
+  an editor hook that lints each edited file gives up after 60 s, as long as a queued job waits.
+- `bundle exec` and `mise x --` count as launchers: `bundle exec rubocop` is rubocop.
 - Worktree cleaning watches free disk space: under 25 GB free it checks every 5 minutes and clears
   dependency folders in worktrees idle an hour, not a day. A disk had run down to 2.5 GB free while
   19 GB of `node_modules` sat in worktrees idle 6–22 hours.
 
 ### Fixed
 
+- A dev server woken by a request was logged as "waited the maximum time, started anyway".
 - A type check in an agent's new worktree, or run as `npx tsc` where it ran as `npm exec tsc` before,
   counted as needing no memory, so two 5 GB type checks started side by side. With no exact record,
   a command now counts as needing what the same program usually needs.

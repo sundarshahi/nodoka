@@ -880,6 +880,7 @@ fn why(j: &Job, st: &Sys) -> String {
         State::Queued => "enough heavy jobs are running; it starts when one finishes".into(),
         State::PressurePaused => "memory is critically low".into(),
         State::IdlePaused => "idle; the next request or saved file wakes it".into(),
+        State::Running if j.wake => "a request or saved file woke it".into(),
         State::Running if j.ended && j.sleepable && j.kind == Kind::Build => {
             "an idle build server holds its memory even paused; asked it to exit (the next build starts a fresh one)"
                 .into()
@@ -1058,7 +1059,8 @@ pub fn recover(path: &Path) {
 /// One line per command and folder: `<bytes>\t<command>\t<folder>`.
 /// The program a label runs, past its launcher: `npx tsc --noEmit` and `npm exec tsc -p .` are tsc.
 fn tool(label: &str) -> &str {
-    const LAUNCHERS: &[&str] = &["npx", "npm", "pnpm", "yarn", "bunx", "bun", "exec", "dlx", "x", "run", "env", "--"];
+    const LAUNCHERS: &[&str] =
+        &["npx", "npm", "pnpm", "yarn", "bunx", "bun", "bundle", "mise", "exec", "dlx", "x", "run", "env", "--"];
     label.split_whitespace().find(|w| !LAUNCHERS.contains(w) && !w.starts_with('-')).unwrap_or(label)
 }
 
@@ -1134,6 +1136,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_woken_server_is_logged_as_woken_not_as_overdue() {
+        let mut j = Job::new(Kind::Dev, 0);
+        (j.wake, j.bg) = (true, true); // lowered earlier, while every core was busy
+        assert_eq!(why(&j, &policy::Sys::default()), "a request or saved file woke it");
+    }
+
+    #[test]
     fn what_each_job_needed_survives_a_restart() {
         let path = std::env::temp_dir().join(format!("nodoka-peaks-{}", std::process::id()));
         let mut peaks = HashMap::new();
@@ -1166,5 +1175,8 @@ mod tests {
         assert_eq!(want("/w/new", "npx tsc --noEmit"), gb(5), "a new worktree, another launcher: tsc's middle");
         assert_eq!(want("/w/new", "npx eslint ."), gb(1));
         assert_eq!(want("/w/new", "cargo build"), 0, "never seen: unknown");
+        seen.insert((PathBuf::from("/w/a"), "rubocop app/a.rb".into()), 100 << 20);
+        let want = |dir: &str, label: &str| expected(&seen, &(PathBuf::from(dir), label.to_string()));
+        assert_eq!(want("/w/b", "mise x -- bundle exec rubocop -a b.rb"), 100 << 20, "past bundle exec and mise x");
     }
 }

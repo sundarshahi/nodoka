@@ -72,6 +72,7 @@ impl Job {
     }
 }
 
+#[derive(Default)]
 pub struct Sys {
     pub now: u64,
     /// Memory pressure: 1 normal, 2 warn, 4 critical.
@@ -122,6 +123,15 @@ pub const MAX_PRESSURE_PAUSE_S: u64 = 600;
 pub const PRESSURE_STEP_S: u64 = 5;
 pub const CALM_BEFORE_RESUME_S: u64 = 20;
 
+/// Needed less than this last time: starts at once and takes no slot. Half of 212 rubocop runs used
+/// under 100 MB, yet seven queued behind tests and builds, and an editor hook that lints each edited
+/// file gives up after 60 s, the same time a queued job waits for its turn.
+pub const LIGHT_JOB: u64 = 512 << 20;
+
+fn light(j: &Job) -> bool {
+    j.expect > 0 && j.expect < LIGHT_JOB
+}
+
 /// Each job always runs at least this share of every second: slowed, never hung.
 pub const MIN_DUTY: f64 = 0.25;
 
@@ -169,7 +179,8 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
     // critical now or under 20 s ago: it flips to warn for a second or two
     let tight = sys.last_critical > 0 && now.saturating_sub(sys.last_critical) < CALM_BEFORE_RESUME_S;
     let mut out = Vec::new();
-    let counts = |j: &Job| j.kind.heavy() && j.state == State::Running && j.admitted && (j.active || j.age_s < 30);
+    let counts =
+        |j: &Job| j.kind.heavy() && !light(j) && j.state == State::Running && j.admitted && (j.active || j.age_s < 30);
     let mut running = jobs.iter().filter(|j| counts(j)).count();
     let set = |j: &mut Job, s: State| {
         j.state = s;
@@ -191,7 +202,9 @@ pub fn decide(jobs: &mut [Job], sys: &mut Sys) -> Vec<Action> {
         // A job that needed more memory last time than is free now waits before it starts, while it
         // holds next to nothing: paused later, a 3.4 GB type check keeps all 3.4 GB.
         let fits = !short_of_memory(j, level, room);
-        if !j.pausable || j.kind == Kind::Test || j.age_s > ADMIT_WINDOW_S || running < cap && fits {
+        if light(j) && fits {
+            j.admitted = true; // no slot: the cap is for heavy work, memory still decides
+        } else if !j.pausable || j.kind == Kind::Test || j.age_s > ADMIT_WINDOW_S || running < cap && fits {
             j.admitted = true;
             running += 1;
             room = room.saturating_sub(j.expect);
@@ -401,6 +414,21 @@ mod tests {
             stop_long_tests_s: 1800,
             last_critical: 0,
         }
+    }
+
+    #[test]
+    fn a_job_that_needed_little_memory_last_time_starts_at_once_and_takes_no_slot() {
+        let mut lint = job(Kind::Build, 0);
+        lint.expect = 100 << 20; // rubocop on a few files
+        let mut tsc = job(Kind::Build, 0);
+        tsc.expect = 5 << 30;
+        let mut jobs = vec![job(Kind::Test, 5), job(Kind::Test, 5), job(Kind::Test, 5), lint.clone(), lint, tsc];
+        let mut s = sys(100, 1, 3);
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(5)], "lint runs while tests fill the slots");
+        let mut unknown = job(Kind::Build, 0);
+        unknown.expect = 0;
+        let mut jobs = vec![job(Kind::Test, 5), job(Kind::Test, 5), job(Kind::Test, 5), unknown];
+        assert_eq!(decide(&mut jobs, &mut s), vec![Action::Pause(3)], "never measured: it waits like before");
     }
 
     #[test]

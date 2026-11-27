@@ -107,6 +107,9 @@ Things that make recognition hard, and how they are handled:
   memory, at most half the cores); at memory-pressure *warn* the limit is halved, rounding up. A build or
   install that starts when the slots are full is paused within its first second and resumed first-in,
   first-out. Test runs never wait (see below) but take a slot.
+  A command that needed under 512 MB last time (a lint of a few files) takes no slot and starts at
+  once, unless memory is too short even for that: an editor hook that lints each edited file gives
+  up after 60 s, as long as a queued job waits.
 - **Waiting for memory.** When a build, type check or install ends, nodoka remembers its peak memory
   under its folder and command line (in memory only; a restart forgets). While pressure is *warn* or
   worse, the next run of that command in that folder is held at start if it needed more than the
