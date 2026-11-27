@@ -42,6 +42,10 @@ fn stat(pid: i32) -> Option<Stat> {
     })
 }
 
+pub fn is_stopped(pid: i32) -> bool {
+    stat(pid).is_none_or(|s| matches!(s.state, 'T' | 't'))
+}
+
 pub fn procs(uid: u32) -> Vec<Proc> {
     let Ok(dir) = fs::read_dir("/proc") else { return vec![] };
     dir.flatten()

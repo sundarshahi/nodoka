@@ -190,6 +190,18 @@ pub fn signal(pid: i32, stop: bool) -> Option<std::io::Error> {
     (r != 0).then(std::io::Error::last_os_error)
 }
 
+/// After pausing a job: macOS drops a SIGSTOP that arrives while a process execs (10 of 40 in a
+/// test), and `mise x`, `bundle exec` and `npm exec` all exec in their first moments, just when a
+/// queued job is paused. A stop can also show and then be undone by an exec under way, so this
+/// looks for 100 ms and stops again whatever runs.
+#[cfg(unix)]
+pub fn settle_stops(pids: &[i32]) {
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        pids.iter().filter(|&&p| !is_stopped(p)).for_each(|&p| _ = signal(p, true));
+    }
+}
+
 /// Bytes this user can still write on the disk holding `p`.
 #[cfg(unix)]
 #[allow(clippy::useless_conversion)] // the field types differ between macOS and Linux
@@ -308,4 +320,24 @@ fn on_windows_an_agents_commands_are_not_the_terminals_but_yours_are() {
     tty_by_ancestry(&mut procs, &["claude", "codex"]);
     let tty: Vec<bool> = procs.iter().map(|p| p.tty).collect();
     assert_eq!(tty, [true, true, true, true, false, false, true, false, true]);
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn a_pause_sent_while_a_launcher_execs_still_sticks() {
+    // like `mise x -- bundle exec rubocop`: a chain of execs, paused at varying moments within it
+    let script = std::env::temp_dir().join(format!("nodoka-exec-chain-{}.sh", std::process::id()));
+    std::fs::write(&script, "n=$1\n[ \"$n\" -gt 0 ] && exec /bin/sh \"$0\" $((n-1))\nexec sleep 30\n").unwrap();
+    for i in 0..20u64 {
+        let mut c = std::process::Command::new("/bin/sh").arg(&script).arg("300").spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(i * 37 % 25 * 10));
+        signal(c.id() as i32, true);
+        settle_stops(&[c.id() as i32]);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let stopped = is_stopped(c.id() as i32);
+        c.kill().ok();
+        c.wait().ok();
+        assert!(stopped, "run {i}: the pause was lost");
+    }
+    std::fs::remove_file(&script).ok();
 }

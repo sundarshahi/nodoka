@@ -24,6 +24,10 @@ fn bsd(pid: i32) -> Option<libc::proc_bsdinfo> {
     (r == sz).then_some(b)
 }
 
+pub fn is_stopped(pid: i32) -> bool {
+    bsd(pid).is_none_or(|b| b.pbi_status == 4) // gone counts as stopped: nothing left to stop
+}
+
 fn has_tty(b: &libc::proc_bsdinfo) -> bool {
     b.e_tdev != u32::MAX && b.e_tdev != 0
 }

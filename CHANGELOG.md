@@ -17,6 +17,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A job paused in its first moments sometimes kept running ("found running … in paused job", 12
+  times in four days). macOS drops a SIGSTOP that arrives while a process execs, and `mise x`,
+  `bundle exec` and `npm exec` exec just then (10 of 40 lost in a test). nodoka now checks for
+  100 ms after pausing and stops again whatever still runs.
 - A dev server woken by a request was logged as "waited the maximum time, started anyway".
 - A type check in an agent's new worktree, or run as `npx tsc` where it ran as `npm exec tsc` before,
   counted as needing no memory, so two 5 GB type checks started side by side. With no exact record,

@@ -494,6 +494,7 @@ pub fn run(opts: Options) {
         if !actions.is_empty() || ledger_dirty || tick == 1 {
             write_ledger(&ledger, &tracked); // before any signal, so a crash can always be undone
         }
+        let mut paused = vec![];
         for a in &actions {
             let (Action::Pause(i) | Action::Resume(i) | Action::Bg(i, _) | Action::Slow(i, _) | Action::Stop(i)) = *a;
             let tr = tracked.get_mut(&keys[i]).unwrap();
@@ -529,6 +530,7 @@ pub fn run(opts: Options) {
                         if let Some(e) = sys::signal(q, true) {
                             log(&format!("pause failed    pid {q} — {} ({e})", tr.label));
                         }
+                        paused.push(q);
                     }
                     Action::Resume(_) => _ = sys::signal(q, false),
                     Action::Bg(_, on) => sys::set_bg(q, on),
@@ -542,6 +544,9 @@ pub fn run(opts: Options) {
             if tr.job.terminal && tr.noticed != tr.job.state {
                 notice(keys[i].0, tr, &st);
             }
+        }
+        if !paused.is_empty() {
+            sys::settle_stops(&paused);
         }
         // children forked into a paused tree since the last tick are paused too (and into a slow one, slowed)
         if !opts.dry_run {

@@ -289,6 +289,9 @@ pub fn cwd(pid: i32) -> Option<PathBuf> {
     params(pid).map(|p| p.1)
 }
 
+/// Nothing to settle: a suspended process stays suspended through anything it was doing.
+pub fn settle_stops(_: &[i32]) {}
+
 /// Bytes this user can still write on the disk holding `p`.
 pub fn disk_free(p: &Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
