@@ -336,7 +336,21 @@ fn a_pause_sent_while_a_launcher_execs_still_sticks() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let stopped = is_stopped(c.id() as i32);
         c.kill().ok();
-        c.wait().ok();
+        let gone = (0..500).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            c.try_wait().ok().flatten().is_some()
+        });
+        let ps = || {
+            String::from_utf8_lossy(
+                &std::process::Command::new("ps")
+                    .args(["-o", "pid,stat,comm", "-p", &c.id().to_string()])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .into_owned()
+        };
+        assert!(gone, "run {i}: killed but still there after 5 s:\n{}", ps());
         assert!(stopped, "run {i}: the pause was lost");
     }
     std::fs::remove_file(&script).ok();
